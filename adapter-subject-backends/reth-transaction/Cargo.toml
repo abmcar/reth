@@ -1,0 +1,27 @@
+[package]
+name = "reth-dtvm-transaction-adapter"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+publish = false
+
+[workspace]
+
+[dependencies]
+alloy-evm = { version = "=0.37.1", default-features = false, features = ["std"] }
+alloy-primitives = { version = "=1.6.1", default-features = false, features = ["std"] }
+reth-dtvm-adapter = { path = ".." }
+revm = { version = "=41.0.0", default-features = false, features = ["std"] }
+thiserror = "=2.0.18"
+
+[dev-dependencies]
+reth-chainspec = { path = "../../crates/chainspec" }
+reth-evm = { path = "../../crates/evm/evm" }
+reth-evm-ethereum = { path = "../../crates/ethereum/evm" }
+sha2 = "=0.10.9"
+
+[patch.crates-io]
+revm-handler = { path = "../../patched/revm-handler" }
+
+[profile.dev]
+debug = 1

@@ -1,0 +1,31 @@
+diff --git a/crates/revmc-runtime/src/runtime/out_of_process.rs b/crates/revmc-runtime/src/runtime/out_of_process.rs
+index b18a63c..29f5472 100644
+--- a/crates/revmc-runtime/src/runtime/out_of_process.rs
++++ b/crates/revmc-runtime/src/runtime/out_of_process.rs
+@@ -673,6 +673,9 @@ fn run_jit_helper_stdio() -> eyre::Result<()> {
+     let pool = ThreadPoolBuilder::new()
+         .num_threads(worker_count)
+         .thread_name(|i| format!("revmc-helper-{i:02}"))
++        // Same LLVM-codegen stack-depth concern as the in-process worker pool
++        // (runtime/worker.rs) -- keep the two in sync.
++        .stack_size(16 * 1024 * 1024)
+         .exit_handler(|_| {
+             HELPER_COMPILER.with_borrow_mut(Option::take);
+         })
+diff --git a/crates/revmc-runtime/src/runtime/worker.rs b/crates/revmc-runtime/src/runtime/worker.rs
+index afc3227..3b0027a 100644
+--- a/crates/revmc-runtime/src/runtime/worker.rs
++++ b/crates/revmc-runtime/src/runtime/worker.rs
+@@ -213,6 +213,12 @@ impl WorkerPool {
+             ThreadPoolBuilder::new()
+                 .num_threads(worker_count)
+                 .thread_name(|i| format!("revmc-{i:02}"))
++                // LLVM codegen (deep recursive instruction selection / CFG traversal on
++                // complex contracts) can exceed the platform default stack size (~2MB):
++                // observed a real overflow on a mainnet contract with 16 concurrent
++                // workers. 16MB matches common "safe" sizes used by other LLVM-backed
++                // compiler worker pools (e.g. rustc's codegen threads).
++                .stack_size(16 * 1024 * 1024)
+                 .exit_handler(|_| clear_thread_local_compilers())
+                 .build()
+                 .expect("failed to spawn compile workers")

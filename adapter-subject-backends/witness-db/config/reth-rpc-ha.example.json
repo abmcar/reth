@@ -1,0 +1,42 @@
+{
+  "schema": "reth-dtvm.rpc-ha-config.v1",
+  "expectedChain": {
+    "chainId": "0x1",
+    "genesisHash": "0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3"
+  },
+  "policy": {
+    "canonicalQuorum": 2,
+    "witnessReady": 2,
+    "requestTimeoutSeconds": 30,
+    "witnessTimeoutSeconds": 600,
+    "maxAttempts": 4,
+    "backoffInitialMs": 250,
+    "backoffMaxMs": 5000,
+    "jitterRatio": 0.2,
+    "requestsPerSecond": 8,
+    "burst": 16,
+    "poolSize": 4,
+    "cacheMaxEntries": 4096,
+    "maxResponseBytes": 536870912
+  },
+  "endpoints": [
+    {
+      "name": "reth-primary",
+      "role": "witness-primary",
+      "urlEnv": "RETH_RPC_PRIMARY_URL",
+      "headersEnv": "RETH_RPC_PRIMARY_HEADERS"
+    },
+    {
+      "name": "reth-standby",
+      "role": "witness-standby",
+      "urlEnv": "RETH_RPC_STANDBY_URL",
+      "headersEnv": "RETH_RPC_STANDBY_HEADERS"
+    },
+    {
+      "name": "canonical-aux",
+      "role": "canonical-aux",
+      "urlEnv": "RETH_RPC_AUX_URL",
+      "headersEnv": "RETH_RPC_AUX_HEADERS"
+    }
+  ]
+}

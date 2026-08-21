@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dtvm.local/schemas/reth-rpc-ha-config-v1.json",
+  "title": "DTVM Reth HA RPC configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "expectedChain",
+    "policy",
+    "endpoints"
+  ],
+  "properties": {
+    "schema": {
+      "const": "reth-dtvm.rpc-ha-config.v1"
+    },
+    "expectedChain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chainId",
+        "genesisHash"
+      ],
+      "properties": {
+        "chainId": {
+          "const": "0x1"
+        },
+        "genesisHash": {
+          "const": "0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3"
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonicalQuorum",
+        "witnessReady"
+      ],
+      "properties": {
+        "canonicalQuorum": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 16
+        },
+        "witnessReady": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 16
+        },
+        "requestTimeoutSeconds": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 3600
+        },
+        "witnessTimeoutSeconds": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "backoffInitialMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60000
+        },
+        "backoffMaxMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 300000
+        },
+        "jitterRatio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "requestsPerSecond": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 10000
+        },
+        "burst": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "poolSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "cacheMaxEntries": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "maxResponseBytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 2147483647
+        }
+      }
+    },
+    "endpoints": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "role",
+          "urlEnv"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,62}$"
+          },
+          "role": {
+            "enum": [
+              "witness-primary",
+              "witness-standby",
+              "canonical-aux"
+            ]
+          },
+          "urlEnv": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{1,127}$"
+          },
+          "headersEnv": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{1,127}$"
+          }
+        }
+      }
+    }
+  }
+}

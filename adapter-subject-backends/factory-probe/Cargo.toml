@@ -1,0 +1,16 @@
+[package]
+name = "reth-dtvm-factory-compile-probe"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[workspace]
+
+[dependencies]
+alloy-evm = { version = "=0.37.1", default-features = false, features = ["std"] }
+reth-chainspec = { path = "../../crates/chainspec" }
+reth-evm = { path = "../../crates/evm/evm" }
+reth-evm-ethereum = { path = "../../crates/ethereum/evm" }
+revm = { version = "=41.0.0", default-features = false, features = ["std"] }
+
