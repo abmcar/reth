@@ -157,6 +157,17 @@ exclude = ["docs/cli", "adapter-subject-backends", "patched"]
 # https://doc.rust-lang.org/edition-guide/rust-2021/default-cargo-resolver.html
 resolver = "2"
 
+# revmc's JIT compilation worker pools do not set a thread stack size, so
+# workers get the platform default (~2 MiB). LLVM code generation recurses
+# deeply enough on some mainnet contracts to exceed that, aborting the process
+# with a stack overflow rather than failing the compilation. This override
+# points at a branch carrying only that fix; patches/ has the diff.
+#
+# Drop this once the fix is upstream.
+[patch."https://github.com/paradigmxyz/revmc"]
+revmc = { git = "https://github.com/abmcar/revmc", branch = "jit-worker-stack-size" }
+
+
 [workspace.lints]
 rust.missing_debug_implementations = "warn"
 rust.missing_docs = "warn"

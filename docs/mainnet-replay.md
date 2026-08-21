@@ -40,6 +40,19 @@ Two stage checkpoints matter:
 
 ## 2. Re-executing a block range
 
+Two commands re-execute a range. They differ in which engines they can drive,
+so pick based on that first:
+
+| | `stage run execution` | `re-execute` |
+|---|---|---|
+| Writes to the datadir | yes (`--commit` mandatory) | no |
+| Unwinds first | yes, unless `--skip-unwind` | no |
+| Accepts `--jit` (revmc) | **no** | **yes** |
+| Honours `RETH_SUBJECT_BACKEND` (EVMC) | yes | yes |
+
+`JitArgs` is wired into the `node` and `re-execute` commands only, so **revmc
+cannot be enabled on `stage run`**. To replay with revmc, use `re-execute`.
+
 ### `reth stage run execution`
 
 Runs the execution stage over an explicit range:
@@ -102,11 +115,17 @@ reth's default engine is REVM. Upstream reth also integrates the
 library crates in [#25178](https://github.com/paradigmxyz/reth/pull/25178).
 
 The `jit` cargo feature is in the `reth` binary's default feature set, so release
-binaries generally include it. Enable it at runtime:
+binaries generally include it. Enable it at runtime — on `node`, or on
+`re-execute` for replay:
 
 ```bash
-reth node --jit [--jit.hot-threshold N] [--jit.worker-count N] ...
+# replay a range with revmc enabled
+reth re-execute --datadir <COPY> --chain mainnet \
+    --from <FIRST> --to <LAST> \
+    --jit --jit.hot-threshold 8 --jit.worker-count 16
 ```
+
+`stage run` does not accept these flags (see the table in §2).
 
 | Flag | Meaning | Default |
 |---|---|---|
@@ -122,9 +141,31 @@ everything: a contract is compiled only after being observed
 interpreted. If you need every contract compiled before some measured region
 begins, you have to arrange and confirm that yourself.
 
-See [`patches/revmc-jit-worker-stack-size.patch`](../patches/revmc-jit-worker-stack-size.patch)
-for a stack-size issue that can abort the process during JIT compilation of some
-mainnet contracts.
+#### JIT worker stack size
+
+Upstream revmc builds its compilation worker pools without setting a thread
+stack size, so workers get the platform default (~2 MiB). LLVM code generation
+recurses deeply enough on some mainnet contracts to exceed that, which aborts
+the process:
+
+```
+thread 'revmc-13' has overflowed its stack
+fatal runtime error: stack overflow, aborting
+```
+
+This fork's root `Cargo.toml` carries a `[patch]` override pointing at a revmc
+branch that sets a 16 MiB stack and changes nothing else, so a build from this
+repository already includes the fix:
+
+```toml
+[patch."https://github.com/paradigmxyz/revmc"]
+revmc = { git = "https://github.com/abmcar/revmc", branch = "jit-worker-stack-size" }
+```
+
+The diff is also in
+[`patches/revmc-jit-worker-stack-size.patch`](../patches/revmc-jit-worker-stack-size.patch)
+if you would rather apply it to your own revmc checkout and point the override
+there. Remove the override entirely once the fix lands upstream.
 
 ### This fork: EVMC backends
 
