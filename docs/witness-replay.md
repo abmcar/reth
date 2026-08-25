@@ -189,6 +189,16 @@ adapter-subject-backends/witness-db/fetch-witness.sh   # single block
 adapter-subject-backends/witness-db/capture-window.sh  # windowed capture
 ```
 
+Node-side requirements: the reth endpoint must expose the `debug` RPC
+namespace (`--http.api` including `debug`) — the scripts call
+`debug_getRawHeader`, `debug_getRawBlock` and
+`debug_executionWitnessByBlockHash`. For blocks well below the head, also
+raise or disable the database read-transaction timeout
+(`--db.read-transaction-timeout 0`); deep witness generation can exceed the
+300 s default. Capturing a fresh window at the finalized tip instead
+(`capture-window.sh --tag finalized`) avoids the depth cost entirely — engine
+comparisons within a corpus do not depend on which window it is.
+
 Witness generation cost rises steeply with the block's depth below the node's
 head (`debug_executionWitnessByBlockHash`; see `mainnet-replay.md` §4). The
 SHA-256 column identifies the exact bundle bytes used with this corpus; a
