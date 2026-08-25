@@ -97,6 +97,21 @@ Do **not** use `rethSubjectRunExecLoop.wallNs` for cross-engine comparison: it
 covers only the frame-execution loop, a strictly smaller region than
 `rethSubjectExecute`.
 
+The whole extraction as one `jq` invocation — per block: number, subject
+median (ms), reference median (ms) over the eight measured passes:
+
+```bash
+jq -rs '
+  def med: sort | if length % 2 == 1 then .[length/2|floor]
+                  else (.[length/2-1] + .[length/2]) / 2 end;
+  map(select(.timingUse and .correctness.passed) | .replay)
+  | group_by(.blockNumber)[]
+  | [ .[0].blockNumber,
+      ([.[].phaseWallTimeNs.rethSubjectExecute] | med / 1e6),
+      ([.[].phaseWallTimeNs.rethRevmExecute]    | med / 1e6) ]
+  | @tsv' timing.jsonl
+```
+
 ---
 
 ## 4. Diagnostic protocol (`replay-batch`, default mode)
@@ -201,18 +216,17 @@ it refuses to run without frozen repository-identity manifests specific to
 that environment and is not needed for reproduction.)
 
 Node-side requirements: the reth endpoint must expose the `debug` RPC
-namespace (`--http.api` including `debug`) — the scripts call
+namespace (`--http.api` including `debug`) — the script calls
 `debug_getRawHeader`, `debug_getRawBlock` and
-`debug_executionWitnessByBlockHash`. For blocks well below the head, also
-raise or disable the database read-transaction timeout
-(`--db.read-transaction-timeout 0`); deep witness generation can exceed the
-300 s default. Capturing a fresh window at the finalized tip instead
-(`capture-window.sh --tag finalized`) avoids the depth cost entirely — engine
-comparisons within a corpus do not depend on which window it is.
+`debug_executionWitnessByBlockHash`. Witness generation cost rises steeply
+with the block's depth below the node's head (see `mainnet-replay.md` §4);
+for blocks well below the head, raise or disable the database
+read-transaction timeout (`--db.read-transaction-timeout 0`) — deep witness
+generation can exceed the 300 s default. Pointing the loop at a window just
+below the current finalized block instead avoids the depth cost entirely —
+engine comparisons within a corpus do not depend on which window it is.
 
-Witness generation cost rises steeply with the block's depth below the node's
-head (`debug_executionWitnessByBlockHash`; see `mainnet-replay.md` §4). The
-SHA-256 column identifies the exact bundle bytes used with this corpus; a
+The SHA-256 column identifies the exact bundle bytes used with this corpus; a
 bundle re-captured from a different node or reth version can differ byte-wise
 while describing the same block — the block hash is the anchor, and
 `verify-witness` checks a bundle's internal integrity either way.
