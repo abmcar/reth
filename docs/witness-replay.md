@@ -148,7 +148,9 @@ The artefact is `lib/libdtvmapi.so`; hash it with `sha256sum` for
 
 For the **diagnostic** build, apply
 [`patches/dtvm-evmc-phase-metrics.patch`](../patches/dtvm-evmc-phase-metrics.patch)
-on top of `338d123` and configure with `-DZEN_ENABLE_EVMC_PHASE_METRICS=ON`.
+on top of `338d123` — or check out the same commit pre-applied as
+[`abmcar/DTVM@evmc-phase-metrics`](https://github.com/abmcar/DTVM/tree/evmc-phase-metrics)
+— and configure with `-DZEN_ENABLE_EVMC_PHASE_METRICS=ON`.
 The patch adds the exported counter ABI
 (`dtvm_get_evmc_phase_metrics` / `dtvm_reset_evmc_phase_metrics`, struct v2)
 plus build switches whose defaults leave codegen behavior identical to the
