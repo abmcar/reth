@@ -1,5 +1,16 @@
 # Finalized tip replay is automatic; moving tips remain reorg-aware
 
+> **Timing engines? Read [`docs/witness-replay.md`](../../docs/witness-replay.md)
+> first.** `replay-block` (used throughout this README) is a single-bundle
+> correctness tool: every invocation constructs a fresh EVMC VM with an empty
+> code cache. Looping it over many bundles makes a compiling engine re-pay full
+> compilation per block. Performance measurement goes through `replay-batch`,
+> which holds one VM across the whole run and fails closed if that breaks.
+> Note also: the `DTVM_LIBRARY` / `DTVM_LIBRARY_SHA256` variables in this
+> README are read only by `cargo test`; the replay binaries take
+> `RETH_SUBJECT_BACKEND` / `RETH_SUBJECT_LIBRARY` /
+> `RETH_SUBJECT_LIBRARY_SHA256`.
+
 This directory is restored output. Its versioned source is the
 `dtvm-run-reth-replay` skill in DTVMDotfiles. Use
 `scripts/restore-reth-replay-suite.sh sync TARGET` from that skill to update

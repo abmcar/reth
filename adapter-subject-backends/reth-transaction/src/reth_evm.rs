@@ -271,8 +271,14 @@ impl<DB: Database, I> EvmTr for DtvmEvm<DB, I> {
         let execution = {
             let mut backend = JournalBackend::new(ctx, precompiles);
             let mut host = HostContext::new(&mut backend, tx_context);
-            let execution = dtvm.execute(EVMC_OSAKA, &message, code.as_ref(), &mut host);
-            *last_audit = host.audit();
+            let mut execution = dtvm.execute(EVMC_OSAKA, &message, code.as_ref(), &mut host);
+            // The successful outcome already carries the same audit sequence;
+            // move it instead of cloning the host's copy a second time. Failed
+            // executions have no outcome, so capture from the host as before.
+            *last_audit = match &mut execution {
+                Ok(outcome) => std::mem::take(&mut outcome.audit),
+                Err(_) => host.audit(),
+            };
             execution
         };
 

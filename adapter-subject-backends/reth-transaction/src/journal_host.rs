@@ -147,7 +147,7 @@ impl<'a, DB: Database> JournalHost<'a, DB> {
             to_revm_address(request.sender),
             scheme,
             to_u256(request.value),
-            Bytes::from(request.input.clone()),
+            request.input.clone(),
             request.gas,
             0,
         );
@@ -196,7 +196,7 @@ impl<'a, DB: Database> JournalHost<'a, DB> {
                 Ok(NestedCallPreparation::Execute {
                     code: request.input.clone(),
                     recipient,
-                    input: Vec::new(),
+                    input: Bytes::new(),
                 })
             }
             ItemOrResult::Result(result) => {
@@ -298,7 +298,7 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
         }
     }
 
-    fn get_code(&mut self, address: Address) -> Result<Vec<u8>, HostFault> {
+    fn get_code(&mut self, address: Address) -> Result<Bytes, HostFault> {
         let result = self
             .context
             .journaled_state
@@ -308,7 +308,7 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
                 .info
                 .code
                 .as_ref()
-                .map(|code| code.original_bytes().to_vec())
+                .map(|code| code.original_bytes())
                 .unwrap_or_default()),
             Err(error) => Err(self.latch_db_error(error)),
         }
@@ -438,7 +438,7 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
         };
         let code_hash = loaded.info.code_hash();
         let code = loaded.info.code.clone().unwrap_or_default();
-        let code_bytes = code.original_bytes().to_vec();
+        let code_bytes = code.original_bytes();
         let depth = usize::try_from(request.depth)
             .map_err(|_| HostFault::NestedCallDepthInvalid(request.depth))?;
         let is_static = request.flags & EVMC_STATIC != 0;
@@ -462,7 +462,7 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
             kind => return Err(HostFault::NestedCallUnsupported { kind }),
         };
         let inputs = CallInputs {
-            input: CallInput::Bytes(Bytes::from(request.input.clone())),
+            input: CallInput::Bytes(request.input.clone()),
             return_memory_offset: 0..0,
             gas_limit: request.gas,
             reservoir: 0,
@@ -804,7 +804,7 @@ mod tests {
             gas: 100_000,
             recipient: Address([0x22; 20]),
             sender: Address([0x11; 20]),
-            input: Vec::new(),
+            input: Bytes::new(),
             value: Word::ZERO,
             create2_salt: Word::ZERO,
             code_address: Address([0x22; 20]),
@@ -819,7 +819,7 @@ mod tests {
             gas: 100_000,
             recipient: Address::default(),
             sender: Address([0x11; 20]),
-            input: vec![0x00],
+            input: Bytes::from(vec![0x00]),
             value: Word::ZERO,
             create2_salt: Word::from_u64(7),
             code_address: Address::default(),
@@ -850,7 +850,7 @@ mod tests {
             NestedCallPreparation::Execute {
                 code: request.input.clone(),
                 recipient: from_revm_address(created),
-                input: Vec::new(),
+                input: Bytes::new(),
             }
         );
         assert_eq!(host.nested_frames.len(), 1);

@@ -39,11 +39,14 @@ layer and validation logic are upstream as-is.
 | Path | What it is |
 |---|---|
 | `bin/reth-dtvm/` | Node binary whose EVM comes from an EVMC shared library instead of the built-in engine. Mirrors the stock `reth` binary otherwise. |
-| `adapter-subject-backends/` | The EVMC bridge — see [`evmc-bridge.md`](./evmc-bridge.md). |
+| `adapter-subject-backends/` | The EVMC bridge — see [`evmc-bridge.md`](./evmc-bridge.md). Includes the witness replay harness (`witness-db/`) — see [`witness-replay.md`](./witness-replay.md). |
 | `patched/revm-handler` | Path dependency of the adapter core. |
 | `patches/revmc-jit-worker-stack-size.patch` | The diff behind the `[patch]` override above, for reference or for applying to your own revmc checkout. |
+| `patches/dtvm-evmc-phase-metrics.patch` | Optional DTVM patch (against `DTVMStack/DTVM@338d123`) adding the diagnostic phase-metrics ABI the batch harness's qualification mode reads. Not needed for timing runs. See [`witness-replay.md`](./witness-replay.md) §4–§5. |
+| `docs/corpus/mainnet-25625000-25625099.tsv` | Manifest of a 100-block mainnet witness corpus: block number, block hash, bundle SHA-256. |
 | `docs/mainnet-replay.md` | How to replay mainnet blocks with reth. |
 | `docs/evmc-bridge.md` | The bridge layer. |
+| `docs/witness-replay.md` | The witness replay harness: binary selection, timing/diagnostic protocols, subject-library builds, corpus. |
 | `docs/fork-changes.md` | This file. |
 
 `bin/reth-dtvm/` is 2 files (~300 lines). It defines a node type whose
@@ -52,6 +55,16 @@ drives it via `Cli::run_with_components`. This matters because reth's CLI derive
 the EVM from the *node type*, so passing a factory to the launch closure alone is
 not sufficient — subcommands such as `stage run` and `re-execute` resolve their
 EVM through the node type and would otherwise silently use the default engine.
+
+### Adapter revision
+
+The bridge validates `keccak256(code) == code_hash` before handing code across
+the EVMC boundary. The adapter here carries that validation in its memoized
+form: code travels as refcounted `Bytes`, and validation results are cached per
+thread keyed by account address (invalidated on any change of hash, pointer, or
+length). An earlier adapter revision recomputed the hash over a full copy of the
+bytecode on every code-related callback; numbers taken through that revision
+include that extra per-callback cost. See `evmc-bridge.md` §6.
 
 ---
 

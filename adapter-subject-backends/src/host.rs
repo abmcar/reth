@@ -10,7 +10,7 @@ use crate::ffi::{
     EVMC_STACK_UNDERFLOW, EVMC_STATIC, EVMC_STATIC_MODE_VIOLATION, EVMC_SUCCESS,
     EVMC_UNDEFINED_INSTRUCTION,
 };
-use alloy_primitives::keccak256;
+use alloy_primitives::{keccak256, Bytes};
 use core::ffi::c_int;
 use std::{
     cell::{Cell, RefCell},
@@ -95,7 +95,7 @@ pub struct NestedCallRequest {
     pub gas: u64,
     pub recipient: Address,
     pub sender: Address,
-    pub input: Vec<u8>,
+    pub input: Bytes,
     pub value: Word,
     pub create2_salt: Word,
     pub code_address: Address,
@@ -122,9 +122,9 @@ pub enum NestedCallPreparation {
     /// recipient to Reth's derived address and clears calldata while retaining
     /// the original initcode as `code`.
     Execute {
-        code: Vec<u8>,
+        code: Bytes,
         recipient: Address,
-        input: Vec<u8>,
+        input: Bytes,
     },
 }
 
@@ -207,7 +207,10 @@ pub trait HostBackend {
     fn get_storage(&mut self, address: Address, key: Word) -> Result<Word, HostFault>;
     fn set_storage(&mut self, address: Address, key: Word, value: Word) -> Result<i32, HostFault>;
     fn get_balance(&mut self, address: Address) -> Result<Word, HostFault>;
-    fn get_code(&mut self, address: Address) -> Result<Vec<u8>, HostFault>;
+    /// Returns the account's code. `Bytes` is refcounted, so implementations
+    /// should return a zero-copy handle to their stored code where possible;
+    /// pointer identity of repeated returns enables validation memoization.
+    fn get_code(&mut self, address: Address) -> Result<Bytes, HostFault>;
     fn get_code_hash(&mut self, address: Address) -> Result<Word, HostFault>;
     fn selfdestruct(&mut self, address: Address, beneficiary: Address) -> Result<bool, HostFault>;
     fn block_hash(&mut self, number: i64) -> Result<Word, HostFault>;
@@ -252,13 +255,14 @@ struct StorageSlot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Account {
     balance: Word,
-    code: Vec<u8>,
+    code: Bytes,
     code_hash: Word,
     storage: BTreeMap<Word, StorageSlot>,
 }
 
 impl Account {
     pub fn new(balance: Word, code: Vec<u8>) -> Self {
+        let code = Bytes::from(code);
         let code_hash = Word(keccak256(&code).0);
         Self {
             balance,
@@ -455,7 +459,7 @@ impl HostBackend for WitnessBackend {
             .unwrap_or(Word::ZERO))
     }
 
-    fn get_code(&mut self, address: Address) -> Result<Vec<u8>, HostFault> {
+    fn get_code(&mut self, address: Address) -> Result<Bytes, HostFault> {
         self.require_account(address)?;
         Ok(self
             .accounts
@@ -634,17 +638,58 @@ struct HostState<'a> {
     audit: Vec<AccessEvent>,
 }
 
+/// One memoized `keccak256(code) == code_hash` validation result.
+struct ValidatedCode {
+    code_hash: Word,
+    /// Holding the refcounted bytes pins the allocation: while this entry is
+    /// alive the pointer cannot be recycled for different content, so pointer
+    /// plus length plus hash equality proves the backend returned the exact
+    /// bytes this entry already validated.
+    code: Bytes,
+}
+
+thread_local! {
+    /// Per-thread memoized code-hash validations for existing accounts, keyed
+    /// by account address. A hit means the identical `(hash, ptr, len)` triple
+    /// was fully validated by `keccak256` before and skipping the recompute is
+    /// observationally equivalent. Any change in hash, pointer, or length
+    /// (account redeployed, backend replaced, allocation changed) falls back
+    /// to a full recompute and replaces the entry. Execution is single
+    /// threaded by construction (`Dtvm` is `!Send`), matching a per-thread
+    /// cache lifetime.
+    static CODE_VALIDATION_CACHE: RefCell<std::collections::HashMap<Address, ValidatedCode>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
 impl HostState<'_> {
-    fn checked_code_and_hash(&mut self, address: Address) -> Result<(Vec<u8>, Word), HostFault> {
+    fn checked_code_and_hash(&mut self, address: Address) -> Result<(Bytes, Word), HostFault> {
         let exists = self.backend.account_exists(address)?;
         let code = self.backend.get_code(address)?;
         let code_hash = self.backend.get_code_hash(address)?;
-        let valid = if exists {
-            code_hash == Word(keccak256(&code).0)
-        } else {
-            code.is_empty() && code_hash == Word::ZERO
-        };
-        if !valid {
+        if exists {
+            let hit = CODE_VALIDATION_CACHE.with(|cache| {
+                cache.borrow().get(&address).is_some_and(|entry| {
+                    entry.code_hash == code_hash
+                        && entry.code.as_ptr() == code.as_ptr()
+                        && entry.code.len() == code.len()
+                })
+            });
+            if hit {
+                return Ok((code, code_hash));
+            }
+            if code_hash != Word(keccak256(&code).0) {
+                return Err(HostFault::CodeHashMismatch(address));
+            }
+            CODE_VALIDATION_CACHE.with(|cache| {
+                cache.borrow_mut().insert(
+                    address,
+                    ValidatedCode {
+                        code_hash,
+                        code: code.clone(),
+                    },
+                )
+            });
+        } else if !(code.is_empty() && code_hash == Word::ZERO) {
             return Err(HostFault::CodeHashMismatch(address));
         }
         Ok((code, code_hash))
@@ -793,7 +838,7 @@ impl<'a> HostContext<'a> {
             .audit
             .push(AccessEvent::CodeCopy(code_address, 0, code.len()));
         let (authoritative, _) = state.checked_code_and_hash(code_address)?;
-        if authoritative != code {
+        if authoritative.as_ref() != code {
             return Err(HostFault::CodeMismatch(code_address));
         }
         Ok(())
@@ -1056,7 +1101,8 @@ unsafe fn call_inner(
     // SAFETY: the caller checked the pointer and EVMC keeps the message live
     // for this synchronous callback.
     let raw = unsafe { *message };
-    let input = unsafe { read_bytes(raw.input_data, raw.input_size, "call.message.input")? };
+    let input =
+        Bytes::from(unsafe { read_bytes(raw.input_data, raw.input_size, "call.message.input")? });
     let gas = u64::try_from(raw.gas).map_err(|_| HostFault::NestedCallGasInvalid(raw.gas))?;
     let request = NestedCallRequest {
         kind: raw.kind,
@@ -1621,7 +1667,7 @@ mod tests {
             Self::unused()
         }
 
-        fn get_code(&mut self, _address: Address) -> Result<Vec<u8>, HostFault> {
+        fn get_code(&mut self, _address: Address) -> Result<Bytes, HostFault> {
             Self::unused()
         }
 
@@ -1685,7 +1731,7 @@ mod tests {
             }
             self.child_active = true;
             Ok(NestedCallPreparation::Execute {
-                code: vec![0x00],
+                code: Bytes::from(vec![0x00]),
                 recipient: request.recipient,
                 input: request.input.clone(),
             })
@@ -1824,7 +1870,7 @@ mod tests {
             gas: 1,
             recipient: Address::default(),
             sender: Address([0x11; 20]),
-            input: vec![0x00],
+            input: Bytes::from(vec![0x00]),
             value: Word::ZERO,
             create2_salt: Word::from_u64(7),
             code_address: Address::default(),
@@ -1864,7 +1910,7 @@ mod tests {
             gas: 1,
             recipient: Address([0x11; 20]),
             sender: Address([0x22; 20]),
-            input: Vec::new(),
+            input: Bytes::new(),
             value: Word::ZERO,
             create2_salt: Word::ZERO,
             code_address: Address([0x11; 20]),

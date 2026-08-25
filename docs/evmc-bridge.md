@@ -41,7 +41,7 @@ adapter-subject-backends/
 │   ├── journal_host.rs   HostBackend backed by revm's journaled state
 │   ├── strict_db.rs      Database impl that records the access sequence
 │   └── lib.rs
-├── witness-db/           standalone witness-driven replay tool
+├── witness-db/           standalone witness-driven replay tool — see docs/witness-replay.md
 ├── revm-reference/       reference execution path
 ├── factory-probe/        checks the factory satisfies reth's trait bounds
 └── verify.sh
@@ -134,6 +134,17 @@ two distinct ways, and they behave differently:
   callbacks (`get_code_size`, `copy_code`, `get_code_hash`) are the ones to look
   at first, since contract bytecode is large and these callbacks fire roughly
   once per nested call.
+
+  The adapter validates `keccak256(code) == code_hash` before handing code
+  across the boundary. Code is handled as refcounted `Bytes` (no copy per
+  callback), and the validation result is memoized per thread, keyed by account
+  address and invalidated on any change of hash, pointer, or length — so the
+  keccak recompute happens once per contract rather than once per callback. An
+  earlier revision of this adapter recomputed the hash over a fresh copy of the
+  full bytecode on every code-related callback; that cost scales with
+  bytecode size × callback count and is attributable to the boundary, not the
+  engine. If you are comparing numbers produced by different adapter revisions,
+  check which behavior was in place.
 
 Both are attributable: instrumenting the adapter to count crossings by kind, and
 microbenchmarking a single crossing in isolation, together bound how much of an
