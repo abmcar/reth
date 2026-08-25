@@ -202,19 +202,20 @@ setup; the artefact is `libevmone.so`. Select it with
 
 ---
 
-## 7. Bundle corpus
+## 7. Capturing a bundle corpus
 
-[`docs/corpus/mainnet-25625000-25625099.tsv`](./corpus/mainnet-25625000-25625099.tsv)
-lists a 100-block mainnet corpus (block number, block hash, bundle SHA-256).
-The bundle files themselves total ~1.4 GB and are not stored in git.
-
-To capture blocks, use `fetch-witness.sh` against a node that can serve
-witnesses for them — one bundle per block:
+Capture a window of consecutive blocks **near your node's finalized tip** —
+witness generation there is cheap, and engine comparisons within a corpus do
+not depend on which window it is. One bundle per block via `fetch-witness.sh`:
 
 ```bash
 RPC=http://127.0.0.1:8545
 mkdir -p bundles
-for n in $(seq 25625000 25625099); do   # or any window your node can serve
+TO=$(curl -s -X POST -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["finalized",false]}' \
+  "$RPC" | jq -r '.result.number' | xargs printf '%d\n')
+FROM=$((TO - 99))                       # 100-block window ending at finalized
+for n in $(seq "$FROM" "$TO"); do
   hash=$(curl -s -X POST -H 'Content-Type: application/json' \
     --data '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["'"$(printf '0x%x' "$n")"'",false]}' \
     "$RPC" | jq -r .result.hash)
@@ -222,6 +223,15 @@ for n in $(seq 25625000 25625099); do   # or any window your node can serve
     "$RPC" "$hash" "bundles/block-$n-$hash.json"
 done
 ```
+
+**Optional — a pinned reference corpus.**
+[`docs/corpus/mainnet-25625000-25625099.tsv`](./corpus/mainnet-25625000-25625099.tsv)
+lists one specific 100-block corpus (block number, block hash, bundle
+SHA-256). You do **not** need it to evaluate engines. Its purpose is workload
+identity: two parties who capture the same pinned blocks can compare numbers
+block by block. Those blocks sit well below the current head, so capturing
+them is subject to the depth cost described below. The bundle files
+themselves total ~1.4 GB and are not stored in git.
 
 (`capture-window.sh` is the original experiment's sealed-provenance pipeline;
 it refuses to run without frozen repository-identity manifests specific to
@@ -238,9 +248,9 @@ older, upgrade it or build `reth` from here. Witness generation cost rises steep
 with the block's depth below the node's head (see `mainnet-replay.md` §4);
 for blocks well below the head, raise or disable the database
 read-transaction timeout (`--db.read-transaction-timeout 0`) — deep witness
-generation can exceed the 300 s default. Pointing the loop at a window just
-below the current finalized block instead avoids the depth cost entirely —
-engine comparisons within a corpus do not depend on which window it is.
+generation can exceed the 300 s default. The finalized-tip loop above avoids
+this cost entirely; it only applies when capturing a pinned historical window
+such as the reference corpus.
 
 The SHA-256 column identifies the exact bundle bytes used with this corpus; a
 bundle re-captured from a different node or reth version can differ byte-wise
