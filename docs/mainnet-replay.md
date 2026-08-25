@@ -133,7 +133,7 @@ reth re-execute --datadir <COPY> --chain mainnet \
 | `--jit.hot-threshold` | Observed misses before a bytecode is promoted to JIT | 8 |
 | `--jit.worker-count` | JIT compilation worker threads | — |
 | `--jit.channel-capacity` | Lookup-event channel capacity; events drop silently when full | 4096 |
-| `--jit.max-pending-jobs` | Maximum queued compilation jobs | — |
+| `--jit.max-pending-jobs` | Maximum queued compilation jobs | 2048 |
 
 This is threshold-triggered compilation, not ahead-of-time compilation of
 everything: a contract is compiled only after being observed
@@ -202,8 +202,13 @@ Absence of that line means the injected factory was not used and execution fell
 through to the default engine.
 
 Everything except the EVM is stock reth — same staged sync, same database, same
-validation. The crate's default features mirror the stock `reth` binary's minus
-`jit`, so the revmc JIT is not simultaneously active.
+validation. The crate's default feature set is however **smaller** than the
+stock `reth` binary's: besides `jit` (so the revmc JIT is not simultaneously
+active), it also omits `gmp`, `reth-revm/portable`, `js-tracer` and the OTLP
+features. `gmp` (modexp precompile) and `reth-revm/portable` are
+performance-relevant, so when comparing `reth-dtvm` against a stock `reth`
+binary on the datadir path, either enable the same features on both builds or
+account for the difference.
 
 Build:
 

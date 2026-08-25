@@ -42,10 +42,12 @@ sha2 = { workspace = true, features = ["std"] }
 tracing.workspace = true
 
 [features]
-# Mirrors the stock `reth` binary's defaults MINUS `jit`: the revmc JIT would be
-# a second, confounding execution engine in an experiment whose whole point is
-# to vary only the EVM. Everything else is kept identical so the DTVM node and
-# the stock node differ in exactly one dimension.
+# A reduced subset of the stock `reth` binary's defaults. `jit` is excluded on
+# purpose: the revmc JIT would be a second, confounding execution engine in an
+# experiment whose whole point is to vary only the EVM. `gmp`,
+# `reth-revm/portable`, `js-tracer` and the OTLP features are also absent —
+# the first two are performance-relevant, so enable matching features on both
+# binaries before comparing this node against stock `reth` on the same datadir.
 default = [
     "jemalloc",
     "asm-keccak",

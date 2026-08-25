@@ -32,12 +32,18 @@ precisely to hold one VM — and therefore one compiled-code cache — across th
 whole run, and it fails closed (`subjectVmCreateCount must equal 1`) if that
 invariant breaks.
 
-Build them from the repository root:
+Build them from the repository root (also needs `curl` and `jq` for the
+capture and extraction steps later):
 
 ```bash
 cargo build --release --manifest-path adapter-subject-backends/witness-db/Cargo.toml \
-    --bin replay-batch --bin replay-block
+    --bin replay-batch --bin replay-block --bin verify-witness
 ```
+
+`witness-db` is its own workspace root, so the binaries land in
+`adapter-subject-backends/witness-db/target/release/`, **not** in the
+repository-root `target/`. The command examples below assume that directory is
+on `PATH` or spelled out.
 
 ---
 
@@ -87,7 +93,8 @@ VM exists for the whole batch; every block passes the correctness gate.
 **Extracting numbers.** Each output line is one block × one pass. Filter to
 `pass.measured == true` and `correctness.passed == true`, then read
 `replay.phaseWallTimeNs.rethSubjectExecute` — one whole block through
-`BasicBlockExecutor::execute_one`, wall clock. Aggregate the eight measured
+`BasicBlockExecutor::execute_one`, wall clock (the region also includes
+executor construction and state extraction, identically on both arms). Aggregate the eight measured
 passes per block (e.g. median). The REVM reference figure for the *same block in
 the same record* is `replay.phaseWallTimeNs.rethRevmExecute`, measured at the
 same boundary with the same witness database; that pairing is the one
@@ -147,16 +154,21 @@ proof.
 
 Pinned source: [`DTVMStack/DTVM`](https://github.com/DTVMStack/DTVM) at
 `338d123` (`refactor(evm): enforce prepared-memory helper proof contracts
-(#598)`). Configuration snapshot of the build used with this harness (GCC 12,
-`Release`):
+(#598)`). Build prerequisites (LLVM for the multipass JIT, cmake entry points)
+are DTVM's own — follow its README at that commit. Configuration snapshot of
+the build used with this harness (GCC 12, `Release`):
 
 ```
 ZEN_ENABLE_EVM=ON                ZEN_ENABLE_MULTIPASS_JIT=ON
 ZEN_ENABLE_LIBEVM=ON             ZEN_ENABLE_VIRTUAL_STACK=ON
 ZEN_ENABLE_CPU_EXCEPTION=ON      ZEN_ENABLE_JIT_PRECOMPILE_FALLBACK=ON
 ZEN_ENABLE_BUILTIN_LIBC=ON       ZEN_ENABLE_BUILTIN_WASI=ON
-ZEN_ENABLE_EVMC_PHASE_METRICS=OFF   (metrics-OFF ⇒ valid for --production-timing)
 ```
+
+An unpatched `338d123` tree has no diagnostic metrics ABI at all, which is
+exactly what `--production-timing` requires. (The
+`ZEN_ENABLE_EVMC_PHASE_METRICS` option itself only exists after applying the
+diagnostic patch below.)
 
 The artefact is `lib/libdtvmapi.so`; hash it with `sha256sum` for
 `RETH_SUBJECT_LIBRARY_SHA256`.
@@ -218,7 +230,11 @@ that environment and is not needed for reproduction.)
 Node-side requirements: the reth endpoint must expose the `debug` RPC
 namespace (`--http.api` including `debug`) — the script calls
 `debug_getRawHeader`, `debug_getRawBlock` and
-`debug_executionWitnessByBlockHash`. Witness generation cost rises steeply
+`debug_executionWitnessByBlockHash`, the last with the two-argument
+`canonical` form. Older reth releases reject the second argument; the script
+then fails loudly with `capability_missing` rather than falling back. A node
+built from this repository (reth 2.4.1 base) serves it; if your node is
+older, upgrade it or build `reth` from here. Witness generation cost rises steeply
 with the block's depth below the node's head (see `mainnet-replay.md` §4);
 for blocks well below the head, raise or disable the database
 read-transaction timeout (`--db.read-transaction-timeout 0`) — deep witness

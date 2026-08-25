@@ -10,7 +10,7 @@ Base commit: `1c2942abc6d3b78a7656acdaa985bdac03408a26`
 
 ## Changes to existing files
 
-Exactly one file:
+Exactly one file (plus the `Cargo.lock` churn it implies):
 
 **`Cargo.toml`** — three edits. Registering the new binary crate, excluding the
 adapter crates from the workspace (each is its own workspace root), and

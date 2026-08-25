@@ -179,10 +179,11 @@ Strict replay requires Linux `memfd_create`, file sealing, and a mounted
 SHA-256, and strict address-cache validation:
 
 ```bash
+RETH_SUBJECT_BACKEND=dtvm-eager \
+RETH_SUBJECT_LIBRARY=/absolute/path/libdtvmapi.so \
+RETH_SUBJECT_LIBRARY_SHA256=<sha256 of that file> \
 DTVM_EVM_STRICT_ADDR_CACHE_VALIDATION=true \
-DTVM_LIBRARY=/absolute/path/libdtvmapi.so \
-DTVM_LIBRARY_SHA256=4ef7059a52b4a5e48fd21d181e5d25f5ed4baf9bf90be28086b792f920ad73fd \
-cargo run --locked --offline --bin replay-block -- /path/to/bundle.json
+cargo run --release --bin replay-block -- --mode subject-only /path/to/bundle.json
 ```
 
 The CLI copies the library into a memfd while hashing those exact bytes. It
