@@ -181,13 +181,24 @@ setup; the artefact is `libevmone.so`. Select it with
 lists a 100-block mainnet corpus (block number, block hash, bundle SHA-256).
 The bundle files themselves total ~1.4 GB and are not stored in git.
 
-To capture the same blocks, point the capture tooling at a node that can serve
-witnesses for them:
+To capture blocks, use `fetch-witness.sh` against a node that can serve
+witnesses for them — one bundle per block:
 
 ```bash
-adapter-subject-backends/witness-db/fetch-witness.sh   # single block
-adapter-subject-backends/witness-db/capture-window.sh  # windowed capture
+RPC=http://127.0.0.1:8545
+mkdir -p bundles
+for n in $(seq 25625000 25625099); do   # or any window your node can serve
+  hash=$(curl -s -X POST -H 'Content-Type: application/json' \
+    --data '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["'"$(printf '0x%x' "$n")"'",false]}' \
+    "$RPC" | jq -r .result.hash)
+  adapter-subject-backends/witness-db/fetch-witness.sh \
+    "$RPC" "$hash" "bundles/block-$n-$hash.json"
+done
 ```
+
+(`capture-window.sh` is the original experiment's sealed-provenance pipeline;
+it refuses to run without frozen repository-identity manifests specific to
+that environment and is not needed for reproduction.)
 
 Node-side requirements: the reth endpoint must expose the `debug` RPC
 namespace (`--http.api` including `debug`) — the scripts call
