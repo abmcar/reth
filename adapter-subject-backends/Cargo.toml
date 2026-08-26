@@ -5,6 +5,10 @@ edition = "2021"
 rust-version = "1.95"
 publish = false
 
+# Own workspace root: keeps the crate buildable when the checkout sits under
+# another cargo workspace's directory tree (e.g. a git worktree of this repo).
+[workspace]
+
 [dependencies]
 alloy-evm = { version = "=0.37.1", default-features = false, features = ["std"] }
 alloy-primitives = { version = "=1.6.1", default-features = false, features = ["std"] }

@@ -26,6 +26,10 @@ use std::{
 use thiserror::Error;
 
 pub const SUBJECT_BACKEND_ENV: &str = "RETH_SUBJECT_BACKEND";
+/// Optional comma-separated extra EVMC options, e.g.
+/// `code_cache_dir=/path,code_cache_mode=rw`. Applied after the mandatory
+/// options; a rejected or malformed entry fails startup loudly.
+pub const SUBJECT_EXTRA_OPTIONS_ENV: &str = "RETH_SUBJECT_EVMC_OPTIONS";
 
 const DTVM_PROFILE_GUIDED_OPTIONS: &[(&str, &str)] = &[
     ("mode", "multipass"),
@@ -489,6 +493,14 @@ pub enum DtvmError {
         value: &'static str,
         result: i32,
     },
+    #[error("EVMC subject rejected extra option {name}={value:?} (result={result})")]
+    ExtraOptionRejected {
+        name: String,
+        value: String,
+        result: i32,
+    },
+    #[error("malformed {SUBJECT_EXTRA_OPTIONS_ENV} entry {entry:?}: expected name=value")]
+    ExtraOptionMalformed { entry: String },
     #[error("required DTVM hot-cache metrics ABI v2 is unavailable: {0}")]
     RequiredHotMetrics(String),
     #[error("required evmone advanced diagnostic metrics ABI v1 is unavailable: {0}")]
@@ -657,6 +669,7 @@ impl Dtvm {
         }
 
         set_mandatory_options(vm, set_option, backend)?;
+        set_extra_options_from_env(vm, set_option)?;
         // EVMC requires clients to query capabilities after all options have
         // been applied because options are allowed to change this value.
         // SAFETY: mandatory vtable function and live VM.
@@ -1241,6 +1254,58 @@ fn set_mandatory_options(
     Ok(())
 }
 
+/// Applies `name=value` pairs from a comma-separated spec through the same
+/// checked EVMC `set_option` path as the mandatory options. Empty entries are
+/// ignored; anything else must parse and be accepted or startup fails.
+fn apply_extra_options(
+    vm: NonNull<EvmcVm>,
+    set_option: crate::ffi::SetOptionFn,
+    spec: &str,
+) -> Result<(), DtvmError> {
+    for entry in spec.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = entry.split_once('=') else {
+            return Err(destroy_with_error(
+                vm,
+                DtvmError::ExtraOptionMalformed {
+                    entry: entry.to_owned(),
+                },
+            ));
+        };
+        let c_name =
+            CString::new(name).expect("extra option name contains no NUL");
+        let c_value =
+            CString::new(value).expect("extra option value contains no NUL");
+        // SAFETY: mandatory vtable function and live VM; C strings terminated.
+        let result =
+            unsafe { set_option(vm.as_ptr(), c_name.as_ptr(), c_value.as_ptr()) };
+        if result != EVMC_SET_OPTION_SUCCESS {
+            return Err(destroy_with_error(
+                vm,
+                DtvmError::ExtraOptionRejected {
+                    name: name.to_owned(),
+                    value: value.to_owned(),
+                    result,
+                },
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn set_extra_options_from_env(
+    vm: NonNull<EvmcVm>,
+    set_option: crate::ffi::SetOptionFn,
+) -> Result<(), DtvmError> {
+    match std::env::var(SUBJECT_EXTRA_OPTIONS_ENV) {
+        Ok(spec) => apply_extra_options(vm, set_option, &spec),
+        Err(_) => Ok(()),
+    }
+}
+
 fn destroy_with_error(vm: NonNull<EvmcVm>, error: DtvmError) -> DtvmError {
     destroy_if_present(vm);
     error
@@ -1327,6 +1392,53 @@ mod tests {
                 expected_options
             );
         }
+    }
+
+    #[test]
+    fn extra_options_parse_apply_and_fail_loudly() {
+        let make_vm = || EvmcVm {
+            abi_version: EVMC_ABI_VERSION,
+            name: ptr::null(),
+            version: ptr::null(),
+            destroy: None,
+            execute: None,
+            get_capabilities: None,
+            set_option: Some(capture_option),
+        };
+
+        // Well-formed spec applies every pair in order via set_option.
+        CAPTURED_OPTIONS.lock().expect("capture lock").clear();
+        let mut raw_vm = make_vm();
+        apply_extra_options(
+            NonNull::from(&mut raw_vm),
+            capture_option,
+            " code_cache_dir=/tmp/cc , code_cache_mode=rw ,",
+        )
+        .expect("extra options apply");
+        assert_eq!(
+            *CAPTURED_OPTIONS.lock().expect("capture lock"),
+            vec![
+                ("code_cache_dir".to_string(), "/tmp/cc".to_string()),
+                ("code_cache_mode".to_string(), "rw".to_string()),
+            ]
+        );
+
+        // Malformed entry fails loudly rather than being skipped.
+        let mut raw_vm = make_vm();
+        let error = apply_extra_options(
+            NonNull::from(&mut raw_vm),
+            capture_option,
+            "code_cache_mode",
+        )
+        .expect_err("malformed entry must be rejected");
+        assert!(matches!(error, DtvmError::ExtraOptionMalformed { .. }));
+
+        // Empty spec is a no-op.
+        CAPTURED_OPTIONS.lock().expect("capture lock").clear();
+        let mut raw_vm = make_vm();
+        apply_extra_options(NonNull::from(&mut raw_vm), capture_option, "  ")
+            .expect("empty spec");
+        assert!(CAPTURED_OPTIONS.lock().expect("capture lock").is_empty());
     }
 
     #[test]
