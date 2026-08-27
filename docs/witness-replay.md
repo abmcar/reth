@@ -58,6 +58,7 @@ The harness binaries read the `RETH_SUBJECT_*` family (the same one
 | `RETH_SUBJECT_LIBRARY` | path to the EVMC shared library |
 | `RETH_SUBJECT_LIBRARY_SHA256` | expected SHA-256 of that file; startup fails on mismatch |
 | `DTVM_EVM_STRICT_ADDR_CACHE_VALIDATION` | must be `true` for the DTVM backends |
+| `RETH_SUBJECT_EVMC_OPTIONS` | optional; comma-separated `name=value` EVMC options applied after the mandatory ones, e.g. `code_cache_dir=/var/cache/dtvm,code_cache_mode=rw`. A malformed entry, or one the library rejects, fails startup with an error rather than being silently ignored. Which names are accepted depends entirely on the loaded library — see §5. |
 
 The `DTVM_LIBRARY` / `DTVM_LIBRARY_SHA256` names that appear in
 `witness-db/README.md` and in test code are consumed **only by `cargo test`**;
@@ -172,6 +173,39 @@ diagnostic patch below.)
 
 The artefact is `lib/libdtvmapi.so`; hash it with `sha256sum` for
 `RETH_SUBJECT_LIBRARY_SHA256`.
+
+**Persistent code cache (optional).** The pinned `338d123` tree keeps compiled
+code only in process memory, so every process recompiles every contract it
+meets. A branch that adds an on-disk cache —
+[`abmcar/DTVM@feat/evm-persistent-code-cache`](https://github.com/abmcar/DTVM/tree/feat/evm-persistent-code-cache)
+— accepts two extra EVMC options, `code_cache_dir` (a directory) and
+`code_cache_mode` (`off`, `ro`, `rw`), passed via
+`RETH_SUBJECT_EVMC_OPTIONS` (§2). It needs no additional CMake switch — the
+cache sits inside the already-enabled `ZEN_ENABLE_MULTIPASS_JIT` — and the
+default mode is `off`, so leaving the options unset reproduces the pinned
+tree's behaviour. Option passthrough requires harness commit `b778d43f7` or
+later; against the pinned library these option names are rejected and startup
+fails.
+
+How much this matters depends entirely on how many processes see the same
+contracts. Measured with `replay-block` in **one process per block** — the
+worst case for in-memory reuse — over blocks 25625046–25625055, as the mean
+`rethSubjectExecute` phase:
+
+| cache | s/block |
+|---|---|
+| none | 492.3 |
+| `rw`, starting empty | 206.9 (399.3 on the first block, 71.3 on the tenth) |
+| `ro`, already populated | 3.0 |
+
+Two caveats on the last row. First, roughly all of those 3 s is cache loading
+(read, digest check, install), not execution: the same blocks execute in
+~95 ms once code is resident in memory, so a populated cache does not buy
+hot-execution speed — it buys not compiling. Second, the 492 s baseline is
+specific to one-process-per-block. Within a single long-lived process the
+in-memory cache already absorbs most of this cost: in a 17-block batch run on
+the same corpus, the first block spent 340–520 s compiling and later blocks
+50–150 s, without any on-disk cache.
 
 For the **diagnostic** build, apply
 [`patches/dtvm-evmc-phase-metrics.patch`](../patches/dtvm-evmc-phase-metrics.patch)

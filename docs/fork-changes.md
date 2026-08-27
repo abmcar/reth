@@ -40,6 +40,7 @@ layer and validation logic are upstream as-is.
 |---|---|
 | `bin/reth-dtvm/` | Node binary whose EVM comes from an EVMC shared library instead of the built-in engine. Mirrors the stock `reth` binary otherwise. |
 | `adapter-subject-backends/` | The EVMC bridge — see [`evmc-bridge.md`](./evmc-bridge.md). Includes the witness replay harness (`witness-db/`) — see [`witness-replay.md`](./witness-replay.md). |
+| `adapter-subject-backends/revmc-witness/` | Standalone witness-replay adapter for the revmc JIT. Not an EVMC backend and not built against this tree: it pins upstream reth and revmc by git revision — see [`witness-replay.md`](./witness-replay.md) §8. |
 | `patched/revm-handler` | Path dependency of the adapter core. |
 | `patches/revmc-jit-worker-stack-size.patch` | The diff behind the `[patch]` override above, for reference or for applying to your own revmc checkout. |
 | `patches/dtvm-evmc-phase-metrics.patch` | Optional DTVM patch (against `DTVMStack/DTVM@338d123`) adding the diagnostic phase-metrics ABI the batch harness's qualification mode reads. Not needed for timing runs. See [`witness-replay.md`](./witness-replay.md) §4–§5. |
