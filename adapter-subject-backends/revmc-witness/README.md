@@ -52,6 +52,11 @@ Only the dependency *source* fields of `Cargo.toml` differ from that checkout
 (path dependencies became the git pins above); the committed `Cargo.lock`
 resolves to the same 456 packages with identical versions and checksums.
 
+The build emits a few `dead_code` warnings. They are expected: the sources are
+kept byte-for-byte as measured, so silencing them would break the hashes above.
+`cargo build --release --locked` and `cargo test --release --locked` (41 tests)
+pass as committed.
+
 ## Lanes
 
 - `--lane resident` — per-block pure-execution timing. All unique witness
