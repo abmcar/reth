@@ -167,6 +167,13 @@ The diff is also in
 if you would rather apply it to your own revmc checkout and point the override
 there. Remove the override entirely once the fix lands upstream.
 
+`--jit` measures node-shaped execution: state comes from the database, and
+JIT compilation overlaps the measured window. A second, standalone revmc path
+— witness input, in-memory state, compilation excluded from the timer — lives
+in `adapter-subject-backends/revmc-witness/` and is documented in
+`witness-replay.md` §8; the two are not interchangeable and their numbers are
+not comparable.
+
 ### This fork: EVMC backends
 
 `bin/reth-dtvm/` builds `reth-dtvm`, a node binary identical to the stock one

@@ -1,0 +1,51 @@
+[package]
+name = "revmc-witness-adapter"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+# Own workspace root: this crate builds against upstream reth at the pinned
+# commit below (revm 42), NOT against this repository's in-tree crates
+# (reth v2.4.1, revm 41). The two are type-incompatible; the pins reproduce
+# the exact dependency set the shipped source was written and measured
+# against. See README.md.
+[workspace]
+
+[dependencies]
+alloy-consensus = { version = "=2.4.0", default-features = false, features = ["std"] }
+alloy-eips = { version = "=2.4.0", default-features = false, features = ["std"] }
+alloy-evm = { version = "=0.38.0", default-features = false, features = ["std"] }
+alloy-primitives = { version = "=1.6.1", default-features = false, features = ["std", "serde"] }
+alloy-rlp = { version = "=0.3.16", default-features = false, features = ["std"] }
+alloy-rpc-types-debug = { version = "=2.4.0", default-features = false }
+alloy-trie = { version = "=0.9.4", default-features = false, features = ["std", "ethereum"] }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth.git", rev = "70fb52e5fc7e6fb799937005ac294c8fffba5a61" }
+reth-consensus = { git = "https://github.com/paradigmxyz/reth.git", rev = "70fb52e5fc7e6fb799937005ac294c8fffba5a61" }
+reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth.git", rev = "70fb52e5fc7e6fb799937005ac294c8fffba5a61" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth.git", rev = "70fb52e5fc7e6fb799937005ac294c8fffba5a61" }
+reth-evm = { git = "https://github.com/paradigmxyz/reth.git", rev = "70fb52e5fc7e6fb799937005ac294c8fffba5a61" }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth.git", rev = "70fb52e5fc7e6fb799937005ac294c8fffba5a61", features = ["jit"] }
+reth-primitives-traits = { version = "=0.6.0", default-features = false, features = ["std", "secp256k1"] }
+reth-trie-common = { git = "https://github.com/paradigmxyz/reth.git", rev = "70fb52e5fc7e6fb799937005ac294c8fffba5a61" }
+reth-trie-sparse = { git = "https://github.com/paradigmxyz/reth.git", rev = "70fb52e5fc7e6fb799937005ac294c8fffba5a61", default-features = false, features = ["std"] }
+revm = { version = "=42.0.1", default-features = false, features = ["std"] }
+revmc = { git = "https://github.com/abmcar/revmc", rev = "cf68a87f627299a9c49bcc333a8a317c9b312a3d", default-features = false, features = ["llvm-prefer-static", "alloy-evm"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
+sha2 = "=0.10.9"
+thiserror = "=2.0.18"
+
+# Pins revmc to one commit for both the direct dependency above and the
+# transitive dependency introduced by reth-evm-ethereum's "jit" feature.
+# cargo rejects a patch whose URL equals the patched source, so the pin goes
+# through a fork that carries the same upstream commit (cf68a87f… is an
+# ancestor of that fork's jit-worker-stack-size branch); the commit hash is
+# what guarantees the bytes are upstream's.
+[patch."https://github.com/paradigmxyz/revmc"]
+revmc = { git = "https://github.com/abmcar/revmc", rev = "cf68a87f627299a9c49bcc333a8a317c9b312a3d" }
+
+[profile.release]
+codegen-units = 16
+lto = "thin"
+strip = "debuginfo"

@@ -256,3 +256,38 @@ The SHA-256 column identifies the exact bundle bytes used with this corpus; a
 bundle re-captured from a different node or reth version can differ byte-wise
 while describing the same block — the block hash is the anchor, and
 `verify-witness` checks a bundle's internal integrity either way.
+
+---
+
+## 8. revmc: a separate witness path with its own baseline
+
+`adapter-subject-backends/revmc-witness/` is a standalone binary that replays
+witness bundles through reth's block executor with the experimental
+[revmc](https://github.com/paradigmxyz/revmc) JIT backend. It is **not** an
+EVMC backend and is not run through `replay-block`/`replay-batch`; it has its
+own CLI, timing protocol, and — importantly — its own dependency baseline.
+
+Two revmc paths exist around this repository, and they measure different
+things:
+
+| | in-tree `--jit` (see `mainnet-replay.md` §3) | `revmc-witness` adapter |
+|---|---|---|
+| Input | datadir | witness bundles |
+| State reads in measured window | database (MDBX) | in-memory strict witness DB |
+| JIT compilation | overlaps the measured window (background promotion) | excluded: `--lane resident` starts the timer only after every unique witness program is compiled and runtime queues are empty |
+| Host reth crates | this repository (v2.4.1 base, revm 41) | upstream `paradigmxyz/reth@70fb52e5fc` (v2.5.0-dev, revm 42), pinned by git in the crate's `Cargo.toml` |
+
+A number produced by one path is not comparable to a number produced by the
+other, and neither is a substitute for the other: the `--jit` path shows
+node-shaped behaviour including storage, while the adapter isolates pure
+execution.
+
+The baseline difference also matters *across* backends: results from this
+adapter (and its native-REVM reference leg, revm 42) were produced with
+different reth scaffolding inside the measured window than the
+`replay-block`/`replay-batch` backends of §1–§6 (this repository, revm 41).
+All paths execute the same consensus rules over the same witness input and
+every block is gated on pre/post state-root verification, but treat
+cross-backend ratios that span the two baselines as carrying an unquantified
+host-version component. Build and usage details are in
+`adapter-subject-backends/revmc-witness/README.md`.
