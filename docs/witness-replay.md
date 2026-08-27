@@ -277,10 +277,12 @@ things:
 | JIT compilation | overlaps the measured window (background promotion) | excluded: `--lane resident` starts the timer only after every unique witness program is compiled and runtime queues are empty |
 | Host reth crates | this repository (v2.4.1 base, revm 41) | upstream `paradigmxyz/reth@70fb52e5fc` (v2.5.0-dev, revm 42), pinned by git in the crate's `Cargo.toml` |
 
+The two paths answer different questions and neither is a substitute for the
+other: `--jit` answers "how fast does a node run a chain segment with revmc"
+(storage included, compilation overlapping), while the adapter answers "how
+fast is the revmc execution kernel" (state in memory, compilation excluded).
 A number produced by one path is not comparable to a number produced by the
-other, and neither is a substitute for the other: the `--jit` path shows
-node-shaped behaviour including storage, while the adapter isolates pure
-execution.
+other.
 
 The baseline difference also matters *across* backends: results from this
 adapter (and its native-REVM reference leg, revm 42) were produced with

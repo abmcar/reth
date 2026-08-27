@@ -37,6 +37,21 @@ backends. Treat cross-backend ratios accordingly.
 and stamps them into every report, so a report is self-describing about what
 produced it.
 
+## Provenance
+
+The shipped sources are byte-identical to the checkout that built the
+measured binary:
+
+| file | sha256 |
+|---|---|
+| `src/main.rs` | `b115375658045a12faf90dc85185ff30a9deeb38c26a13fe4ad8bd26d2b461e9` |
+| `src/witness.rs` | `59eb1a2810d9dd11247207f136d3813c7946567ed212cd529b931d19558e81d5` |
+| `src/strict_db.rs` | `660b8149e5f1acdd300a9038f490093480ab43eabd4c281ec703c9f8ba230c34` |
+
+Only the dependency *source* fields of `Cargo.toml` differ from that checkout
+(path dependencies became the git pins above); the committed `Cargo.lock`
+resolves to the same 456 packages with identical versions and checksums.
+
 ## Lanes
 
 - `--lane resident` — per-block pure-execution timing. All unique witness

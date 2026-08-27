@@ -30,6 +30,8 @@ reth-primitives-traits = { version = "=0.6.0", default-features = false, feature
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth.git", rev = "70fb52e5fc7e6fb799937005ac294c8fffba5a61" }
 reth-trie-sparse = { git = "https://github.com/paradigmxyz/reth.git", rev = "70fb52e5fc7e6fb799937005ac294c8fffba5a61", default-features = false, features = ["std"] }
 revm = { version = "=42.0.1", default-features = false, features = ["std"] }
+# Upstream paradigmxyz/revmc bytes at cf68a87f, not a fork change; this URL is
+# used only because cargo rejects a [patch] whose URL equals the patched source.
 revmc = { git = "https://github.com/abmcar/revmc", rev = "cf68a87f627299a9c49bcc333a8a317c9b312a3d", default-features = false, features = ["llvm-prefer-static", "alloy-evm"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
@@ -38,11 +40,9 @@ thiserror = "=2.0.18"
 
 # Pins revmc to one commit for both the direct dependency above and the
 # transitive dependency introduced by reth-evm-ethereum's "jit" feature.
-# cargo rejects a patch whose URL equals the patched source, so the pin goes
-# through a fork that carries the same upstream commit (cf68a87f… is an
-# ancestor of that fork's jit-worker-stack-size branch); the commit hash is
-# what guarantees the bytes are upstream's.
 [patch."https://github.com/paradigmxyz/revmc"]
+# Upstream cf68a87f bytes via the fork URL — same reason as above; the commit
+# hash is what guarantees the content.
 revmc = { git = "https://github.com/abmcar/revmc", rev = "cf68a87f627299a9c49bcc333a8a317c9b312a3d" }
 
 [profile.release]
