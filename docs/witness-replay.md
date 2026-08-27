@@ -154,8 +154,8 @@ proof.
 ### DTVM
 
 Pinned source: [`DTVMStack/DTVM`](https://github.com/DTVMStack/DTVM) at
-`338d123` (`refactor(evm): enforce prepared-memory helper proof contracts
-(#598)`). Build prerequisites (LLVM for the multipass JIT, cmake entry points)
+`338d123a5d9d4a464d8d0151158447d500a9997a` (`refactor(evm): enforce
+prepared-memory helper proof contracts (#598)`). Build prerequisites (LLVM for the multipass JIT, cmake entry points)
 are DTVM's own — follow its README at that commit. Configuration snapshot of
 the build used with this harness (GCC 12, `Release`):
 
@@ -220,7 +220,8 @@ unpatched tree.
 ### evmone
 
 Pinned source: [`DTVMStack/evmone`](https://github.com/DTVMStack/evmone) at
-`a4a0e47` (`feat: update evmc (#9)`), built unmodified with its standard CMake
+`a4a0e47aff903a47a6be133c67ad106c706fe566` (`feat: update evmc (#9)`), built
+unmodified with its standard CMake
 setup; the artefact is `libevmone.so`. Select it with
 `RETH_SUBJECT_BACKEND=evmone-advanced`.
 
