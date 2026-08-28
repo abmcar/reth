@@ -872,7 +872,9 @@ fn replay_bundle_started(
         let (subject_result, subject_accesses, subject_bundle, _) = subject_execution
             .as_ref()
             .expect("differential mode runs the subject");
-        if std::env::var_os("EVMC_BRIDGE_TRACE").is_some() {
+        if std::env::var_os("EVMC_BRIDGE_TRACE").is_some()
+            || std::env::var_os("EVMC_BRIDGE_ACCESS_COUNTS").is_some()
+        {
             eprintln!(
                 "[diag] db accesses: subject={} reference={} identical={}",
                 subject_accesses.len(),
@@ -883,11 +885,13 @@ fn replay_bundle_started(
         if subject_result != reference_result {
             return Err(ReplayError::ExecutionResultMismatch);
         }
-        if !access_sequences_eq_with_withdrawal_tail(
-            subject_accesses,
-            reference_accesses,
-            &withdrawal_balance_accounts,
-        ) {
+        if !subject_accesses_within_reference(subject_accesses, reference_accesses)
+            && !access_sequences_eq_with_withdrawal_tail(
+                subject_accesses,
+                reference_accesses,
+                &withdrawal_balance_accounts,
+            )
+        {
             let index = subject_accesses
                 .iter()
                 .zip(reference_accesses)
@@ -1185,6 +1189,32 @@ fn bundle_state_semantics_eq(actual: &BundleState, expected: &BundleState) -> bo
     actual.state == expected.state
         && actual.contracts == expected.contracts
         && actual.reverts.content_eq(&expected.reverts)
+}
+
+/// Reports whether every database access the subject made was also made by the
+/// reference, in the same relative order.
+///
+/// Requiring the two sequences to be *equal* is stricter than the property this
+/// gate exists to enforce. The EVMC bridge answers the EIP-2929 warm-up
+/// callbacks (`access_account`, `access_storage`) from the journal without a
+/// cold load, so an instruction that runs out of gas at the cold-access charge
+/// never issues the read that REVM has already performed - REVM loads the
+/// account or slot first and charges afterwards. The subject then reads a
+/// strict subset of what the reference read, which is exactly what witness
+/// completeness asks for; it is the opposite direction, an access the reference
+/// never made, that means the subject stepped outside the proof.
+///
+/// Reading *less* cannot hide a wrong value: the execution result is compared
+/// before this gate, the bundle state after it, and the post-state root is
+/// verified against the target header in every replay mode.
+///
+/// Accesses within one block are distinct - the journal serves every repeat
+/// from memory - so the greedy match below is an exact subsequence test.
+fn subject_accesses_within_reference(subject: &[DbAccess], reference: &[DbAccess]) -> bool {
+    let mut reference = reference.iter();
+    subject
+        .iter()
+        .all(|access| reference.any(|candidate| candidate == access))
 }
 
 fn access_sequences_eq_with_withdrawal_tail(
@@ -1591,6 +1621,43 @@ mod tests {
             Some(BatchMetricsKind::EvmoneAdvanced)
         ));
         assert!(should_project_dtvm_phase_metrics(false, None));
+    }
+
+    #[test]
+    fn subject_may_read_less_than_the_reference_but_never_more() {
+        let first = Address::repeat_byte(0x11);
+        let second = Address::repeat_byte(0x22);
+        let slot = U256::from(7);
+        let reference = [
+            DbAccess::Basic(first),
+            DbAccess::Storage(first, slot),
+            DbAccess::Basic(second),
+        ];
+
+        // Equal, and the real shape: an instruction that ran out of gas at the
+        // cold-access charge never issued the read REVM had already made.
+        assert!(subject_accesses_within_reference(&reference, &reference));
+        assert!(subject_accesses_within_reference(
+            &[DbAccess::Basic(first), DbAccess::Basic(second)],
+            &reference,
+        ));
+        assert!(subject_accesses_within_reference(&[], &reference));
+
+        // An access the reference never made is still rejected - that is the
+        // step outside the proven witness this gate exists to catch.
+        assert!(!subject_accesses_within_reference(
+            &[
+                DbAccess::Basic(first),
+                DbAccess::Storage(second, slot),
+                DbAccess::Basic(second),
+            ],
+            &reference,
+        ));
+        // So is the same set read in a different order.
+        assert!(!subject_accesses_within_reference(
+            &[DbAccess::Basic(second), DbAccess::Basic(first)],
+            &reference,
+        ));
     }
 
     #[test]
