@@ -247,18 +247,32 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
     }
 
     fn account_exists(&mut self, address: Address) -> Result<bool, HostFault> {
+        bridge_trace("account_exists", address);
         let spec = self.context.cfg.spec;
-        let result = self
-            .context
-            .journaled_state
-            .load_account(to_revm_address(address));
+        let address = to_revm_address(address);
+        let result = self.context.journaled_state.load_account(address);
         match result {
             Ok(load) => Ok(!load.state_clear_aware_is_empty(spec)),
+            // An EVMC VM issues `account_exists` while pricing the CALL
+            // new-account surcharge, and evmone (up to and including the
+            // pinned 0.18 line) asks it *before* charging CALL_VALUE_COST.
+            // REVM charges that 9000 first, and additionally skips the cold
+            // load outright once the remaining gas cannot even cover the
+            // cold-access surcharge, so a CALL that is already out of gas
+            // never reads its target. Such a probe can therefore name an
+            // account the canonical execution never touched and a witness
+            // built from that execution cannot prove. Answer the neutral
+            // "empty" instead of consuming a proof that does not exist: it
+            // can only raise the instruction's cost, and every path on which
+            // the answer could still be observed - performing the call,
+            // reading the target's balance, code or storage - loads the same
+            // unproven account again and fails closed there.
             Err(error) => Err(self.latch_db_error(error)),
         }
     }
 
     fn get_storage(&mut self, address: Address, key: Word) -> Result<Word, HostFault> {
+        bridge_trace("get_storage", address);
         let address = to_revm_address(address);
         self.ensure_account_loaded(address)?;
         let result = self.context.journaled_state.sload(address, to_u256(key));
@@ -269,6 +283,7 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
     }
 
     fn set_storage(&mut self, address: Address, key: Word, value: Word) -> Result<i32, HostFault> {
+        bridge_trace("set_storage", address);
         let address = to_revm_address(address);
         self.ensure_account_loaded(address)?;
         let result = self
@@ -288,6 +303,7 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
     }
 
     fn get_balance(&mut self, address: Address) -> Result<Word, HostFault> {
+        bridge_trace("get_balance", address);
         let result = self
             .context
             .journaled_state
@@ -299,10 +315,9 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
     }
 
     fn get_code(&mut self, address: Address) -> Result<Bytes, HostFault> {
-        let result = self
-            .context
-            .journaled_state
-            .load_account_with_code(to_revm_address(address));
+        bridge_trace("get_code", address);
+        let address = to_revm_address(address);
+        let result = self.context.journaled_state.load_account_with_code(address);
         match result {
             Ok(load) => Ok(load
                 .info
@@ -315,10 +330,9 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
     }
 
     fn get_code_hash(&mut self, address: Address) -> Result<Word, HostFault> {
-        let result = self
-            .context
-            .journaled_state
-            .code_hash(to_revm_address(address));
+        bridge_trace("get_code_hash", address);
+        let address = to_revm_address(address);
+        let result = self.context.journaled_state.code_hash(address);
         match result {
             Ok(load) => Ok(from_b256(load.data)),
             Err(error) => Err(self.latch_db_error(error)),
@@ -326,6 +340,8 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
     }
 
     fn selfdestruct(&mut self, address: Address, beneficiary: Address) -> Result<bool, HostFault> {
+        bridge_trace("selfdestruct", address);
+        bridge_trace("selfdestruct.beneficiary", beneficiary);
         match self.context.journaled_state.selfdestruct(
             to_revm_address(address),
             to_revm_address(beneficiary),
@@ -359,6 +375,7 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
     }
 
     fn access_account(&mut self, address: Address) -> Result<bool, HostFault> {
+        bridge_trace("access_account", address);
         let result = self
             .context
             .journaled_state
@@ -371,6 +388,7 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
     }
 
     fn is_account_warm(&mut self, address: Address) -> Result<bool, HostFault> {
+        bridge_trace("is_account_warm", address);
         let address = to_revm_address(address);
         let journal = &self.context.journaled_state.inner;
 
@@ -385,6 +403,7 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
     }
 
     fn access_storage(&mut self, address: Address, key: Word) -> Result<bool, HostFault> {
+        bridge_trace("access_storage", address);
         let address = to_revm_address(address);
         let result = self
             .context
@@ -426,6 +445,8 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
         if matches!(request.kind, EVMC_CREATE | EVMC_CREATE2) {
             return self.begin_create(request);
         }
+        bridge_trace("begin_call.recipient", request.recipient);
+        bridge_trace("begin_call.code_address", request.code_address);
         let target = to_revm_address(request.recipient);
         let code_address = to_revm_address(request.code_address);
         let loaded = match self
@@ -698,6 +719,19 @@ fn evmc_to_instruction(status: i32) -> Result<InstructionResult, HostFault> {
             )));
         }
     })
+}
+
+/// Diagnostic-only tracer for host-backend account traffic.
+///
+/// Enabled by `EVMC_BRIDGE_TRACE=1`. Off by default and never on a hot path
+/// decision, it exists to localize an unproven witness access to the exact
+/// host callback that requested it.
+pub(crate) fn bridge_trace(op: &str, address: Address) {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("EVMC_BRIDGE_TRACE").is_some()) {
+        eprintln!("[bridge] {op} {:?}", to_revm_address(address));
+    }
 }
 
 fn to_revm_address(address: Address) -> RevmAddress {

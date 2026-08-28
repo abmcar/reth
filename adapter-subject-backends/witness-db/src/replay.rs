@@ -761,9 +761,45 @@ fn replay_bundle_started(
             Ok(result) => result,
             Err(error) => {
                 let state = subject_executor.into_state();
+                let subject_accesses = state.database.strict_db().accesses();
+                if std::env::var_os("EVMC_BRIDGE_TRACE").is_some() {
+                    let count = subject_accesses.len();
+                    if let Some(dir) = std::env::var_os("EVMC_BRIDGE_TRACE_DIR") {
+                        let dir = std::path::PathBuf::from(dir);
+                        let dump = |name: &str, accesses: &[DbAccess]| {
+                            let text = accesses
+                                .iter()
+                                .enumerate()
+                                .map(|(index, access)| format!("{index} {access:?}\n"))
+                                .collect::<String>();
+                            let _ = std::fs::write(dir.join(name), text);
+                        };
+                        dump("subject-accesses.txt", subject_accesses);
+                        if let Some((_, reference_accesses, _, _)) = reference_execution.as_ref() {
+                            dump("reference-accesses.txt", reference_accesses);
+                        }
+                    }
+                    eprintln!("[diag] subject failed after {count} db accesses");
+                    let from = count.saturating_sub(6);
+                    for (index, access) in subject_accesses[from..].iter().enumerate() {
+                        eprintln!("[diag] subject[{}] = {access:?}", from + index);
+                    }
+                    if let Some((_, reference_accesses, _, _)) = reference_execution.as_ref() {
+                        let from = count.saturating_sub(6);
+                        let to = (count + 4).min(reference_accesses.len());
+                        eprintln!(
+                            "[diag] reference made {} db accesses",
+                            reference_accesses.len()
+                        );
+                        for (index, access) in reference_accesses[from..to].iter().enumerate() {
+                            eprintln!("[diag] reference[{}] = {access:?}", from + index);
+                        }
+                    }
+                }
+                let access_count = subject_accesses.len();
                 return Err(classify_subject_execution(
                     &error,
-                    state.database.strict_db().accesses().len(),
+                    access_count,
                     &transaction_hashes,
                 ));
             }
@@ -836,6 +872,14 @@ fn replay_bundle_started(
         let (subject_result, subject_accesses, subject_bundle, _) = subject_execution
             .as_ref()
             .expect("differential mode runs the subject");
+        if std::env::var_os("EVMC_BRIDGE_TRACE").is_some() {
+            eprintln!(
+                "[diag] db accesses: subject={} reference={} identical={}",
+                subject_accesses.len(),
+                reference_accesses.len(),
+                subject_accesses == reference_accesses
+            );
+        }
         if subject_result != reference_result {
             return Err(ReplayError::ExecutionResultMismatch);
         }
