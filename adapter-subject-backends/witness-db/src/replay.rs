@@ -885,8 +885,11 @@ fn replay_bundle_started(
         if subject_result != reference_result {
             return Err(ReplayError::ExecutionResultMismatch);
         }
-        if !subject_accesses_within_reference(subject_accesses, reference_accesses)
-            && !access_sequences_eq_with_withdrawal_tail(
+        if !subject_accesses_within_reference(
+            subject_accesses,
+            reference_accesses,
+            &withdrawal_balance_accounts,
+        ) && !access_sequences_eq_with_withdrawal_tail(
                 subject_accesses,
                 reference_accesses,
                 &withdrawal_balance_accounts,
@@ -1208,13 +1211,60 @@ fn bundle_state_semantics_eq(actual: &BundleState, expected: &BundleState) -> bo
 /// before this gate, the bundle state after it, and the post-state root is
 /// verified against the target header in every replay mode.
 ///
+/// The post-execution withdrawal tail is compared as a set, because the order
+/// in which the beneficiaries are loaded is not execution semantics. A block
+/// can show both effects at once - 25818085 skips one cold SLOAD *and* loads
+/// the 16 withdrawal beneficiaries in a different order - so the two
+/// allowances have to compose rather than sit behind separate branches.
+///
 /// Accesses within one block are distinct - the journal serves every repeat
 /// from memory - so the greedy match below is an exact subsequence test.
-fn subject_accesses_within_reference(subject: &[DbAccess], reference: &[DbAccess]) -> bool {
-    let mut reference = reference.iter();
-    subject
+fn subject_accesses_within_reference(
+    subject: &[DbAccess],
+    reference: &[DbAccess],
+    withdrawal_accounts: &BTreeSet<Address>,
+) -> bool {
+    let subject_tail = withdrawal_tail_start(subject, withdrawal_accounts);
+    let reference_tail = withdrawal_tail_start(reference, withdrawal_accounts);
+    let tail_addresses = |accesses: &[DbAccess]| {
+        accesses
+            .iter()
+            .filter_map(|access| match access {
+                DbAccess::Basic(address) => Some(*address),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>()
+    };
+    if !tail_addresses(&subject[subject_tail..])
+        .is_subset(&tail_addresses(&reference[reference_tail..]))
+    {
+        return false;
+    }
+    let mut reference = reference[..reference_tail].iter();
+    subject[..subject_tail]
         .iter()
         .all(|access| reference.any(|candidate| candidate == access))
+}
+
+/// Index at which an access sequence's withdrawal tail begins: the longest
+/// suffix of distinct `Basic` loads of withdrawal beneficiaries.
+///
+/// Reth credits withdrawals after execution and the order in which it loads
+/// the beneficiaries is not part of the execution semantics, so this tail is
+/// compared as a set. Everything before it still has to embed in order.
+fn withdrawal_tail_start(accesses: &[DbAccess], withdrawal_accounts: &BTreeSet<Address>) -> usize {
+    let mut start = accesses.len();
+    let mut seen = BTreeSet::new();
+    for (index, access) in accesses.iter().enumerate().rev() {
+        let DbAccess::Basic(address) = access else {
+            break;
+        };
+        if !withdrawal_accounts.contains(address) || !seen.insert(*address) {
+            break;
+        }
+        start = index;
+    }
+    start
 }
 
 fn access_sequences_eq_with_withdrawal_tail(
@@ -1636,12 +1686,22 @@ mod tests {
 
         // Equal, and the real shape: an instruction that ran out of gas at the
         // cold-access charge never issued the read REVM had already made.
-        assert!(subject_accesses_within_reference(&reference, &reference));
+        let no_withdrawals = BTreeSet::new();
+        assert!(subject_accesses_within_reference(
+            &reference,
+            &reference,
+            &no_withdrawals
+        ));
         assert!(subject_accesses_within_reference(
             &[DbAccess::Basic(first), DbAccess::Basic(second)],
             &reference,
+            &no_withdrawals,
         ));
-        assert!(subject_accesses_within_reference(&[], &reference));
+        assert!(subject_accesses_within_reference(
+            &[],
+            &reference,
+            &no_withdrawals
+        ));
 
         // An access the reference never made is still rejected - that is the
         // step outside the proven witness this gate exists to catch.
@@ -1652,11 +1712,62 @@ mod tests {
                 DbAccess::Basic(second),
             ],
             &reference,
+            &no_withdrawals,
         ));
         // So is the same set read in a different order.
         assert!(!subject_accesses_within_reference(
             &[DbAccess::Basic(second), DbAccess::Basic(first)],
             &reference,
+            &no_withdrawals,
+        ));
+    }
+
+    #[test]
+    fn a_skipped_read_and_a_reordered_withdrawal_tail_compose() {
+        // The shape of block 25818085: the subject misses one cold SLOAD whose
+        // gas the frame could not pay, and loads the withdrawal beneficiaries
+        // in its own order. Neither allowance alone accepts it.
+        let contract = Address::repeat_byte(0x11);
+        let first = Address::repeat_byte(0xa1);
+        let second = Address::repeat_byte(0xa2);
+        let withdrawals = BTreeSet::from([first, second]);
+        let reference = [
+            DbAccess::Basic(contract),
+            DbAccess::Storage(contract, U256::from(1)),
+            DbAccess::Storage(contract, U256::from(2)),
+            DbAccess::Basic(first),
+            DbAccess::Basic(second),
+        ];
+        let subject = [
+            DbAccess::Basic(contract),
+            DbAccess::Storage(contract, U256::from(1)),
+            DbAccess::Basic(second),
+            DbAccess::Basic(first),
+        ];
+
+        assert!(subject_accesses_within_reference(
+            &subject,
+            &reference,
+            &withdrawals
+        ));
+        assert!(!access_sequences_eq_with_withdrawal_tail(
+            &subject,
+            &reference,
+            &withdrawals
+        ));
+
+        // A withdrawal beneficiary the reference never loaded is still caught.
+        let stranger = Address::repeat_byte(0xa3);
+        let subject = [
+            DbAccess::Basic(contract),
+            DbAccess::Storage(contract, U256::from(1)),
+            DbAccess::Basic(second),
+            DbAccess::Basic(stranger),
+        ];
+        assert!(!subject_accesses_within_reference(
+            &subject,
+            &reference,
+            &BTreeSet::from([first, second, stranger]),
         ));
     }
 
