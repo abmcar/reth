@@ -35,7 +35,10 @@ use revm::{
         InterpreterResult, SharedMemory,
     },
 };
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::{
+    fmt,
+    panic::{catch_unwind, AssertUnwindSafe},
+};
 
 /// Host backend for the standard REVM Ethereum context.
 ///
@@ -267,6 +270,7 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
             // the answer could still be observed - performing the call,
             // reading the target's balance, code or storage - loads the same
             // unproven account again and fails closed there.
+            Err(error) if unproven_account(&error, address) => Ok(false),
             Err(error) => Err(self.latch_db_error(error)),
         }
     }
@@ -325,6 +329,10 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
                 .as_ref()
                 .map(|code| code.original_bytes())
                 .unwrap_or_default()),
+            // See `account_exists`: an account the canonical execution never
+            // read has no proof, and the empty code of a non-existent account
+            // is the answer consistent with the `false` reported there.
+            Err(error) if unproven_account(&error, address) => Ok(Bytes::new()),
             Err(error) => Err(self.latch_db_error(error)),
         }
     }
@@ -335,6 +343,10 @@ impl<DB: Database> HostBackend for JournalHost<'_, DB> {
         let result = self.context.journaled_state.code_hash(address);
         match result {
             Ok(load) => Ok(from_b256(load.data)),
+            // See `account_exists`: EXTCODEHASH of a non-existent account is
+            // zero, which is what `HostState::checked_code_and_hash` requires
+            // to pair with the `false` reported there.
+            Err(error) if unproven_account(&error, address) => Ok(Word::ZERO),
             Err(error) => Err(self.latch_db_error(error)),
         }
     }
@@ -721,6 +733,51 @@ fn evmc_to_instruction(status: i32) -> Result<InstructionResult, HostFault> {
     })
 }
 
+/// Messages the strict witness database uses when a query names an account it
+/// cannot prove.
+///
+/// The bridge is generic over `DB`, and `EvmFactory` fixes the associated
+/// `Evm<DB: Database, I>` signature, so no extra bound can be placed on
+/// `DB::Error` to carry this as typed data. Matching the rendered message is
+/// the same discipline the replay harness already applies to these errors.
+const UNPROVEN_ACCOUNT_PREFIXES: [&str; 2] = [
+    // `WitnessImportError::IncompleteAccountProof`
+    "account proof is incomplete for ",
+    // `StrictDbError::MissingAccount`
+    "account is outside the proven witness: ",
+];
+
+/// Reports whether `error` says that `address` itself lies outside the proven
+/// witness.
+///
+/// The address is compared, not just the prefix: an incompleteness error
+/// raised for some *other* account is a different failure and must stay fatal.
+/// The witness error reaches the bridge wrapped by the state provider, so the
+/// prefix is matched as a `": "`-delimited segment rather than at the very
+/// start of the message - the same shape the replay harness matches.
+fn unproven_account<E: fmt::Display>(error: &E, address: RevmAddress) -> bool {
+    let message = error.to_string();
+    UNPROVEN_ACCOUNT_PREFIXES
+        .iter()
+        .any(|prefix| names_address(&message, prefix, address))
+}
+
+fn names_address(message: &str, prefix: &str, address: RevmAddress) -> bool {
+    let segments = std::iter::once(message).chain(
+        message
+            .match_indices(": ")
+            .map(|(index, separator)| &message[index + separator.len()..]),
+    );
+    segments
+        .filter_map(|segment| segment.strip_prefix(prefix))
+        .any(|rest| {
+            rest.split_whitespace()
+                .next()
+                .and_then(|token| token.parse::<RevmAddress>().ok())
+                .is_some_and(|named| named == address)
+        })
+}
+
 /// Diagnostic-only tracer for host-backend account traffic.
 ///
 /// Enabled by `EVMC_BRIDGE_TRACE=1`. Off by default and never on a hot path
@@ -773,6 +830,58 @@ mod tests {
 
     const CALLER: RevmAddress = RevmAddress::new([0x11; 20]);
     const TARGET: RevmAddress = RevmAddress::new([0x22; 20]);
+
+    const UNPROVEN: RevmAddress = RevmAddress::new([0x33; 20]);
+
+    #[test]
+    fn unproven_account_matches_only_the_probed_address() {
+        let wrapped = format!("Database error: account proof is incomplete for {UNPROVEN}");
+        assert!(unproven_account(&wrapped, UNPROVEN));
+        assert!(!unproven_account(&wrapped, TARGET));
+
+        // Both strict-witness spellings, bare and wrapped.
+        assert!(unproven_account(
+            &format!("account is outside the proven witness: {UNPROVEN}"),
+            UNPROVEN
+        ));
+        assert!(unproven_account(
+            &format!("outer: inner: account proof is incomplete for {UNPROVEN}"),
+            UNPROVEN
+        ));
+
+        // A different namespace, or an unrelated failure, stays fatal.
+        assert!(!unproven_account(
+            &format!("storage is outside the proven witness: {UNPROVEN}[0]"),
+            UNPROVEN
+        ));
+        assert!(!unproven_account(&"connection reset".to_string(), UNPROVEN));
+    }
+
+    #[test]
+    fn unproven_account_answers_read_probes_and_fails_closed_on_use() {
+        // Nothing about UNPROVEN is covered: every load of it is outside the
+        // proof, exactly like the mainnet blocks where an EVMC VM probes a
+        // CALL target that the canonical execution never read.
+        let mut db = StrictDb::default();
+        db.insert_account(CALLER, AccountInfo::default()).unwrap();
+        let mut context = Context::<BlockEnv, TxEnv, CfgEnv, StrictDb>::new(db, SpecId::OSAKA);
+        let mut precompiles = PrecompilesMap::from(EthPrecompiles::new(SpecId::OSAKA));
+        let mut host = JournalHost::new(&mut context, &mut precompiles);
+        let unproven = from_revm_address(UNPROVEN);
+
+        // The read-only probes evmone issues before the gas charge that aborts
+        // the CALL answer as a non-existent, codeless account.
+        assert!(!host.access_account(unproven).unwrap());
+        assert!(!host.account_exists(unproven).unwrap());
+        assert!(host.get_code(unproven).unwrap().is_empty());
+        assert_eq!(host.get_code_hash(unproven).unwrap(), Word::ZERO);
+        // No proof was consumed and no sticky error was latched.
+        assert!(host.context.error.is_ok());
+
+        // Anything that would actually use the account still fails closed.
+        assert!(host.get_balance(unproven).is_err());
+        assert!(host.context.error.is_err());
+    }
 
     #[test]
     fn access_callbacks_defer_cold_account_and_storage_loads() {
