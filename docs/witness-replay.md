@@ -207,6 +207,18 @@ in-memory cache already absorbs most of this cost: in a 17-block batch run on
 the same corpus, the first block spent 340–520 s compiling and later blocks
 50–150 s, without any on-disk cache.
 
+**In-memory module cache bound (optional).** Separately from the on-disk cache,
+each EVMC VM keeps compiled modules in an LRU whose capacity is a compile-time
+constant (`MaxModuleCacheSize`, 4096 in the pinned tree). A `replay-batch` run
+holds one VM across the whole corpus, so a corpus containing more unique
+contracts than that bound evicts and recompiles inside the measured passes —
+which the §4 hot-cache gate then fails, correctly. The
+`feat/evm-persistent-code-cache` branch reads
+`DTVM_EVM_MAX_MODULE_CACHE_SIZE` (a plain environment variable, not an EVMC
+option) to raise it; an unparseable value is ignored with a warning and the
+default stands. Count your corpus first and set the bound above it — the
+1000-block corpus of §10 holds 15,415 unique contracts and is run at 16384.
+
 For the **diagnostic** build, apply
 [`patches/dtvm-evmc-phase-metrics.patch`](../patches/dtvm-evmc-phase-metrics.patch)
 on top of `338d123` — or check out the same commit pre-applied as
@@ -312,6 +324,20 @@ things:
 | JIT compilation | overlaps the measured window (background promotion) | excluded: `--lane resident` starts the timer only after every unique witness program is compiled and runtime queues are empty |
 | Host reth crates | this repository (v2.4.1 base, revm 41) | upstream `paradigmxyz/reth@70fb52e5fc` (v2.5.0-dev, revm 42), pinned by git in the crate's `Cargo.toml` |
 
+**The revmc pin must carry the worker-stack fix.** revmc spawns JIT codegen
+workers without setting a thread stack size, so they get the platform default
+(~2 MB), which LLVM instruction selection overflows on the largest mainnet
+contracts — the process aborts with `thread 'revmc-NN' has overflowed its
+stack` rather than failing the compilation. Over the §10 corpus this killed 38
+of 1000 blocks, clustered on the blocks holding the biggest code, so the loss
+was biased rather than random. Both the workspace `[patch]` in the root
+`Cargo.toml` and this crate's own `Cargo.toml` therefore pin
+`abmcar/revmc@42d475f46a480c00fe73a70879e4ea633ee8fbbd` — upstream
+`paradigmxyz/revmc@cf68a87f` plus that one commit
+([`patches/revmc-jit-worker-stack-size.patch`](../patches/revmc-jit-worker-stack-size.patch)).
+Pinned by commit, not by branch: a branch pin stops being reproducible the
+moment the branch moves. With the fix in place those 38 failures drop to zero.
+
 The two paths answer different questions and neither is a substitute for the
 other: `--jit` answers "how fast does a node run a chain segment with revmc"
 (storage included, compilation overlapping), while the adapter answers "how
@@ -328,3 +354,134 @@ every block is gated on pre/post state-root verification, but treat
 cross-backend ratios that span the two baselines as carrying an unquantified
 host-version component. Build and usage details are in
 `adapter-subject-backends/revmc-witness/README.md`.
+
+---
+
+## 9. geth: the native-stateless reference leg
+
+`geth-witness-replay` feeds the same bundles to go-ethereum's own
+`core/stateless` execution and emits a report with the same shape as the other
+engines (pre/post state root, five commitments, phase timings). It is a
+separate binary built from a geth tree, not from this repository.
+
+**It is not checked in as source, on purpose.** The CLI lives under geth's
+`cmd/` and derives from GPL code, while this repository is Apache-2.0 + MIT.
+It ships as patches instead, the same way the DTVM and revmc changes do, so
+the GPL text stays on the GPL side:
+
+| Patch | Applies to | Gives you |
+|---|---|---|
+| [`patches/geth-witness-replay-cli-stock.patch`](../patches/geth-witness-replay-cli-stock.patch) | stock go-ethereum v1.17.4 | the CLI, no `core/` change at all |
+| [`patches/geth-witness-replay-cli-fork.patch`](../patches/geth-witness-replay-cli-fork.patch) | v1.17.4 **plus** the metrics patch below | the CLI, execution-only timing |
+| [`patches/geth-execution-metrics.patch`](../patches/geth-execution-metrics.patch) | `core/` of v1.17.4 (3 files, +62 lines) | splits setup / execution / validation |
+
+```bash
+git clone https://github.com/ethereum/go-ethereum && cd go-ethereum
+git checkout v1.17.4                       # 36a7dc72e96b3f42846be925cfeb2fad18489917
+git apply /path/to/reth/patches/geth-execution-metrics.patch          # fork variant only
+git apply /path/to/reth/patches/geth-witness-replay-cli-fork.patch
+go build -o geth-witness-replay ./cmd/geth-witness-replay             # needs go 1.24.x
+./geth-witness-replay -input BUNDLE.json
+```
+
+**Which variant you build changes what the number means.** The two CLIs differ
+by twelve lines, but not in what they measure:
+
+| | stock | fork |
+|---|---|---|
+| `core/` changes | none | 3 files, +62 lines |
+| timed region | `Setup + Execution + Validation` | **`Execution` only** |
+| report `schema` | `geth-witness-replay.report.v1-stock` | `geth-witness-replay.report.v1` |
+| read the time from | the single whole-run figure | `phaseWallTimeNs.gethExecute` |
+
+On mainnet block 25625046 the stock caliber reads 131.39 ms against the fork's
+91.65 ms — **1.43×**, i.e. setup and validation are about 30% of the stock
+figure. That gap is systematic, not noise. The stock variant is the easier
+build and is fine on its own terms, but a stock number placed beside the
+`rethSubjectExecute` figures of §3 is not comparing the same region. **The
+§10 campaign uses the fork variant**; check the `schema` field of any report
+before trusting a cross-engine ratio.
+
+The patches were derived from the tree that produced the measured binary; run
+`git apply --check` against a fresh v1.17.4 before relying on them.
+
+---
+
+## 10. Running the five-engine comparison over the 1000-block corpus
+
+This is the concrete campaign the sections above serve: DTVM, evmone, geth,
+revmc, and REVM over one thousand consecutive mainnet blocks.
+
+### 10.1 The corpus
+
+Blocks **25817835–25818834**, 1000 consecutive blocks with no gaps, ~16 GB of
+bundles. Measured properties, not estimates: **15,415 unique contracts**,
+147.9 MB of novel bytecode, a mean of 361 contracts per block.
+
+Capture it with the §7 loop (`FROM=25817835`, `TO=25818834`). These blocks sit
+well below any current head, so the depth cost of §7 applies — raise the read
+transaction timeout (`--db.read-transaction-timeout 0`) or capture your own
+window near your node's finalized tip instead. **A different window is fine**;
+engine comparisons are internal to a corpus. What is not fine is comparing
+engines across *different* block sets — see §10.3.
+
+### 10.2 What each leg needs
+
+| Engine | Binary | Version pin | Notes |
+|---|---|---|---|
+| DTVM | `replay-batch` | `abmcar/DTVM@feat/evm-persistent-code-cache` | `RETH_SUBJECT_BACKEND=dtvm-eager`; needs `DTVM_EVM_MAX_MODULE_CACHE_SIZE=16384` (§5) and a metrics-OFF build for `--production-timing` |
+| evmone | `replay-block` | `DTVMStack/evmone` v0.18.0, sha256 `1316fad3aac3ee21…` | `RETH_SUBJECT_BACKEND=evmone-advanced`; no batch path (§6) |
+| geth | `geth-witness-replay` | go-ethereum v1.17.4 `36a7dc72e`, **fork** variant | §9 |
+| revmc | `revmc-witness-adapter` | `abmcar/revmc@42d475f`, `--lane resident` | §8; its own reth baseline |
+| REVM | — | in-record | `phaseWallTimeNs.rethRevmExecute`, from the same DTVM/evmone records (§3) |
+
+Two of these run against a different host baseline than the others: revmc (and
+its native-REVM reference leg) is built on upstream reth v2.5.0-dev / revm 42,
+while the EVMC legs use this repository at v2.4.1 / revm 41. §8 explains why
+that gap is unquantified; do not silently fold it into an engine ratio.
+
+The DTVM leg is the expensive one. With no code cache it is roughly 6.4 hours
+over the good blocks; with a fully populated on-disk cache it is about 0.3
+hours. At the *default* L1 bound of 4096 — below this corpus's 15,415 unique
+contracts — it degrades to hundreds of hours from eviction thrash, which is
+why §5's environment variable is not optional here.
+
+### 10.3 Use the intersection, not each engine's own subset
+
+Not every engine replays every block. Comparing engines on the blocks each one
+happens to survive means comparing different question sets, and the resulting
+ratios mean nothing. **Take the set of blocks that all engines pass, and run
+every engine on exactly that set.**
+
+A full 1000×4 correctness scan (4000 independent replays, no sampling) found
+46 blocks failing at least one engine, an intersection of 954. Every one of
+those failures has since been root-caused, and all but two are fixed:
+
+| Defect | Blocks | Cause | State |
+|---|---|---|---|
+| Cold-account probe order | 5 | evmone-family engines probe a call target before charging the 9000 transfer cost; revm charges first and skips the cold load when the frame cannot pay. The frame runs out of gas at the charge, so revm never touches the account. Upstream evmone v0.23 already reorders this. | fixed in the adapter: three read-only probes answer self-consistently instead of consuming a witness proof |
+| Over-strict access gate | 3 | the gate required the subject's DB access sequence to equal the reference's item for item, rejecting the legitimate case where the subject reads *less* | fixed: subject accepted as an order-preserving subsequence, withdrawal tail compared as a set. Applies to `witness-db` and, separately, to `revmc-witness`, which carries its own copy of the gate |
+| revmc worker stack overflow | 38 | §8 | fixed by the commit pin |
+| DTVM halt gas rule | 2 | three sites overwrote the gas the halt path had just set with `instance.getGas()`, which is not authoritative after a halt | fixed upstream: DTVMStack/DTVM#605 |
+| DTVM JIT null dereference | **2** | generated code stores through a null memory base in a nested frame; `mode=interpreter` passes both blocks completely, so it is JIT-only | **open** — 25818502 and 25818530 |
+
+After the fixes, rechecking every block that had ever failed gives DTVM 2
+failures (the open defect), evmone 0, geth 0, revmc 0 — an intersection of
+**998 / 1000**. Until the JIT defect is closed, run the campaign on those 998
+blocks and say so; `replay-batch` holds one process across the whole batch, so
+a single failing block aborts the entire DTVM leg rather than skipping it.
+
+### 10.4 Order of operations
+
+1. Scan for correctness first, one engine at a time, and build the
+   intersection. Do not skip this because a previous run's block list is
+   lying around — engine or adapter changes move the set.
+2. Run the §4 diagnostic pass with a metrics-ON DTVM build to *prove* no
+   compilation happened inside the measured region.
+3. Run the §3 `--production-timing` pass with the metrics-OFF build for the
+   numbers, on the intersection only.
+4. Extract with the `jq` recipe in §3, pairing each subject median against the
+   `rethRevmExecute` median from the same records.
+
+Steps 2 and 3 are two different runs against two different libraries by
+design; skipping step 2 leaves the timing valid but unqualified.
