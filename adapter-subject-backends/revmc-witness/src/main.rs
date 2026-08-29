@@ -586,6 +586,53 @@ fn tx_results_equivalent(discovery: &[TxResult], reference: &[TxResult]) -> bool
 /// check already established in this project's other reth-dtvm adapter
 /// (`access_sequences_eq_with_withdrawal_tail` in
 /// adapter-subject-backends-20260731/witness-db/src/replay.rs).
+fn subject_accesses_within_reference(
+    subject: &[strict_db::DbAccess],
+    reference: &[strict_db::DbAccess],
+    withdrawal_accounts: &BTreeSet<Address>,
+) -> bool {
+    let subject_tail = withdrawal_tail_start(subject, withdrawal_accounts);
+    let reference_tail = withdrawal_tail_start(reference, withdrawal_accounts);
+    let tail_addresses = |accesses: &[strict_db::DbAccess]| {
+        accesses
+            .iter()
+            .filter_map(|access| match access {
+                strict_db::DbAccess::Basic(address) => Some(*address),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>()
+    };
+    if !tail_addresses(&subject[subject_tail..])
+        .is_subset(&tail_addresses(&reference[reference_tail..]))
+    {
+        return false;
+    }
+    let mut reference = reference[..reference_tail].iter();
+    subject[..subject_tail]
+        .iter()
+        .all(|access| reference.any(|candidate| candidate == access))
+}
+
+/// Index at which an access sequence's withdrawal tail begins: the longest
+/// suffix of distinct `Basic` loads of withdrawal beneficiaries.
+fn withdrawal_tail_start(
+    accesses: &[strict_db::DbAccess],
+    withdrawal_accounts: &BTreeSet<Address>,
+) -> usize {
+    let mut start = accesses.len();
+    let mut seen = BTreeSet::new();
+    for (index, access) in accesses.iter().enumerate().rev() {
+        let strict_db::DbAccess::Basic(address) = access else {
+            break;
+        };
+        if !withdrawal_accounts.contains(address) || !seen.insert(*address) {
+            break;
+        }
+        start = index;
+    }
+    start
+}
+
 fn access_sequences_eq_with_withdrawal_tail(
     actual: &[strict_db::DbAccess],
     expected: &[strict_db::DbAccess],
@@ -649,7 +696,19 @@ fn verify_discovery(
     validate_block_post_execution(&block.recovered, MAINNET.as_ref(), &discovery.result, None, None)
         .map_err(|error| io::Error::other(format!("discovery post validation: {error}")))?;
     let withdrawal_accts = withdrawal_accounts(block);
+    // The discovery replay may read strictly less than the reference: an
+    // instruction that runs out of gas at a cold-access charge never issues the
+    // load the reference already made. Accept that direction -- witness
+    // completeness needs the subject's reads to be a subset, not an equal set --
+    // and keep the withdrawal tail compared as a set, since reth's ordering of
+    // beneficiary loads is not part of execution semantics. Wrong values cannot
+    // hide behind a skipped read: the post-state root is still verified against
+    // the target header below.
     let accesses_ok = access_sequences_eq_with_withdrawal_tail(
+        &discovery.accesses,
+        &reference.accesses,
+        &withdrawal_accts,
+    ) || subject_accesses_within_reference(
         &discovery.accesses,
         &reference.accesses,
         &withdrawal_accts,
@@ -848,7 +907,14 @@ fn compare_and_verify(
     });
     let tx_full_result_match = tx_results_equivalent(&subject.tx_results, &reference.tx_results);
     let state_match = bundle_state_semantics_eq(&reference.bundle_state, &subject.bundle_state);
+    // Same allowance as the discovery gate: the subject may read strictly
+    // less than the reference when an instruction runs out of gas at a
+    // cold-access charge, and the withdrawal tail is compared as a set.
     let access_sequence_match = access_sequences_eq_with_withdrawal_tail(
+        &subject.accesses,
+        &reference.accesses,
+        &withdrawal_accounts(&block),
+    ) || subject_accesses_within_reference(
         &subject.accesses,
         &reference.accesses,
         &withdrawal_accounts(&block),
