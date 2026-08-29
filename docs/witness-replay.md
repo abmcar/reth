@@ -429,11 +429,19 @@ engines across *different* block sets — see §10.3.
 
 | Engine | Binary | Version pin | Notes |
 |---|---|---|---|
-| DTVM | `replay-batch` | `abmcar/DTVM@feat/evm-persistent-code-cache` | `RETH_SUBJECT_BACKEND=dtvm-eager`; needs `DTVM_EVM_MAX_MODULE_CACHE_SIZE=16384` (§5) and a metrics-OFF build for `--production-timing` |
+| DTVM | `replay-batch` | `abmcar/DTVM@03b542e6b765685795dee2d4a8a3efcba91d0e2a` | `RETH_SUBJECT_BACKEND=dtvm-eager`; needs `DTVM_EVM_MAX_MODULE_CACHE_SIZE=16384` (§5) and a metrics-OFF build for `--production-timing` |
 | evmone | `replay-block` | `DTVMStack/evmone` v0.18.0, sha256 `1316fad3aac3ee21…` | `RETH_SUBJECT_BACKEND=evmone-advanced`; no batch path (§6) |
 | geth | `geth-witness-replay` | go-ethereum v1.17.4 `36a7dc72e`, **fork** variant | §9 |
 | revmc | `revmc-witness-adapter` | `abmcar/revmc@42d475f`, `--lane resident` | §8; its own reth baseline |
 | REVM | — | in-record | `phaseWallTimeNs.rethRevmExecute`, from the same DTVM/evmone records (§3) |
+
+Give DTVM its commit, not its branch name. `03b542e` is the head of
+`feat/evm-persistent-code-cache` at the time of writing and is the tree the
+measured library was built from; it carries the persistent code cache, the
+module-cache bound of §5, and two engine fixes that landed upstream as
+DTVMStack/DTVM#605 (gas on an exceptional halt) and #604 (a null dereference
+misreported as an EVM memory fault). The branch keeps moving; the commit does
+not — the same reason §8 pins revmc by sha.
 
 Two of these run against a different host baseline than the others: revmc (and
 its native-REVM reference leg) is built on upstream reth v2.5.0-dev / revm 42,
