@@ -165,7 +165,12 @@ resolver = "2"
 #
 # Drop this once the fix is upstream.
 [patch."https://github.com/paradigmxyz/revmc"]
-revmc = { git = "https://github.com/abmcar/revmc", branch = "jit-worker-stack-size" }
+# Pinned by sha, not branch: a branch pin makes the build unreproducible the
+# moment the branch moves. 42d475f is upstream paradigmxyz/revmc cf68a87f plus
+# one fork commit that raises the JIT codegen workers' stack to 16 MiB; the
+# platform default (~2 MB) is overflowed by LLVM instruction selection on
+# complex mainnet contracts.
+revmc = { git = "https://github.com/abmcar/revmc", rev = "42d475f46a480c00fe73a70879e4ea633ee8fbbd" }
 
 
 [workspace.lints]
