@@ -30,9 +30,15 @@ reth-primitives-traits = { version = "=0.6.0", default-features = false, feature
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth.git", rev = "70fb52e5fc7e6fb799937005ac294c8fffba5a61" }
 reth-trie-sparse = { git = "https://github.com/paradigmxyz/reth.git", rev = "70fb52e5fc7e6fb799937005ac294c8fffba5a61", default-features = false, features = ["std"] }
 revm = { version = "=42.0.1", default-features = false, features = ["std"] }
-# Upstream paradigmxyz/revmc bytes at cf68a87f, not a fork change; this URL is
+# abmcar/revmc @ 42d475f = upstream paradigmxyz/revmc cf68a87f plus exactly one
+# fork commit: "Set a 16 MiB stack for JIT compilation workers" (2 files, +9 lines,
+# stack_size only). Upstream spawns codegen workers with the platform default ~2 MB,
+# which LLVM instruction selection overflows on complex mainnet contracts -- 38 of
+# 1000 blocks in the 25817835-25818834 window aborted with "thread 'revmc-NN' has
+# overflowed its stack". Pinned by sha, not branch, so the build stays reproducible.
+# This URL is
 # used only because cargo rejects a [patch] whose URL equals the patched source.
-revmc = { git = "https://github.com/abmcar/revmc", rev = "cf68a87f627299a9c49bcc333a8a317c9b312a3d", default-features = false, features = ["llvm-prefer-static", "alloy-evm"] }
+revmc = { git = "https://github.com/abmcar/revmc", rev = "42d475f46a480c00fe73a70879e4ea633ee8fbbd", default-features = false, features = ["llvm-prefer-static", "alloy-evm"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 sha2 = "=0.10.9"
@@ -43,7 +49,7 @@ thiserror = "=2.0.18"
 [patch."https://github.com/paradigmxyz/revmc"]
 # Upstream cf68a87f bytes via the fork URL — same reason as above; the commit
 # hash is what guarantees the content.
-revmc = { git = "https://github.com/abmcar/revmc", rev = "cf68a87f627299a9c49bcc333a8a317c9b312a3d" }
+revmc = { git = "https://github.com/abmcar/revmc", rev = "42d475f46a480c00fe73a70879e4ea633ee8fbbd" }
 
 [profile.release]
 codegen-units = 16
