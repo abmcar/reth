@@ -471,13 +471,16 @@ those failures has since been root-caused, and all but two are fixed:
 | Over-strict access gate | 3 | the gate required the subject's DB access sequence to equal the reference's item for item, rejecting the legitimate case where the subject reads *less* | fixed: subject accepted as an order-preserving subsequence, withdrawal tail compared as a set. Applies to `witness-db` and, separately, to `revmc-witness`, which carries its own copy of the gate |
 | revmc worker stack overflow | 38 | §8 | fixed by the commit pin |
 | DTVM halt gas rule | 2 | three sites overwrote the gas the halt path had just set with `instance.getGas()`, which is not authoritative after a halt | fixed upstream: DTVMStack/DTVM#605 |
-| DTVM JIT null dereference | **2** | generated code stores through a null memory base in a nested frame; `mode=interpreter` passes both blocks completely, so it is JIT-only | **open** — 25818502 and 25818530 |
+| DTVM JIT null dereference | 2 | EVM memory is allocated lazily, so a frame starts with `MemoryBase == nullptr`. When a frame's first growth happens inside one of fifteen runtime helpers rather than through `expandMemoryIR`, the helper allocates and sets the instance's base, the JIT reloads only its cached *size*, and the entry-time null survives in the cached base. The reloaded size then keeps the expansion branch — the only other refresh site — untaken. Depth 0 on a fresh instance qualifies; no nested call is required. | fixed upstream: DTVMStack/DTVM#607 |
 
-After the fixes, rechecking every block that had ever failed gives DTVM 2
-failures (the open defect), evmone 0, geth 0, revmc 0 — an intersection of
-**998 / 1000**. Until the JIT defect is closed, run the campaign on those 998
-blocks and say so; `replay-batch` holds one process across the whole batch, so
-a single failing block aborts the entire DTVM leg rather than skipping it.
+All 46 are closed. A full 1000-block rescan under the fixed libraries returns
+**1000 OK, 0 failures**, so the four-engine intersection is now the entire
+corpus: **1000 / 1000**, up from 954. Run the campaign on all 1000 blocks.
+
+This matters operationally as well as statistically: `replay-batch` holds one
+process across the whole batch, so a single failing block aborts the entire
+DTVM leg rather than skipping it. A corpus that is not fully clean cannot be
+timed in one pass at all.
 
 ### 10.4 Order of operations
 
@@ -493,3 +496,28 @@ a single failing block aborts the entire DTVM leg rather than skipping it.
 
 Steps 2 and 3 are two different runs against two different libraries by
 design; skipping step 2 leaves the timing valid but unqualified.
+
+### 10.5 What the DTVM number contains
+
+Read `rethSubjectExecute` and you get the wide boundary: executor construction,
+`execute_one`, and state extraction. `replay-batch` — and only `replay-batch`,
+since `execution_metrics::enable()` is called from the batch session
+constructor — also fills `rethSubjectRunExecLoop.wallNs`, the sum over each
+top-level execution of revm's frame-execution loop. On this corpus the gap is
+small: 217.23 ms wide against 207.15 ms tight for DTVM, 62.17 against 56.03 for
+REVM. The fixed overhead is the same in absolute terms on both arms, so it is a
+larger *fraction* of REVM's smaller number — which means the tight boundary
+makes DTVM look **worse**, not better: 3.44x against 3.22x.
+
+Neither boundary isolates code generation. Both include every host callback
+made from inside the loop, and for the EVMC backends every one of those crosses
+the bridge. A metrics-ON build measured, on this corpus, **2,248 module-cache
+lookups per block** against 186 top-level executions — the lookup is per call
+*frame*, and the L0 inline cache is disabled in the source. Each of those
+lookups runs a full bytecode `memcmp`, because
+`DTVM_EVM_STRICT_ADDR_CACHE_VALIDATION=true` is mandatory here and the relaxed
+mode compares only a 256-byte head and tail. Nested frames do not reopen the
+timing window, so all of that sits inside the DTVM figure.
+
+State it as what it is: **DTVM through the EVMC bridge with strict cache
+validation, against native REVM.** Not codegen against interpreter.
