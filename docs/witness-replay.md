@@ -452,19 +452,32 @@ engines across *different* block sets — see §10.3.
 
 | Engine | Binary | Version pin | Notes |
 |---|---|---|---|
-| DTVM | `replay-batch` | `abmcar/DTVM@03b542e6b765685795dee2d4a8a3efcba91d0e2a` | `RETH_SUBJECT_BACKEND=dtvm-eager`; needs `DTVM_EVM_MAX_MODULE_CACHE_SIZE=131072` (§5 — do not size this by unique-contract count) and a metrics-OFF build for `--production-timing` |
+| DTVM | `replay-batch` | `abmcar/DTVM@8403be3f7f390afe9ea4d5366305ea7b9da24fa0` | `RETH_SUBJECT_BACKEND=dtvm-eager`; needs `DTVM_EVM_MAX_MODULE_CACHE_SIZE=131072` (§5 — do not size this by unique-contract count) and a metrics-OFF build for `--production-timing` |
 | evmone | `replay-block` | `DTVMStack/evmone` v0.18.0, sha256 `1316fad3aac3ee21…` | `RETH_SUBJECT_BACKEND=evmone-advanced`; no batch path (§6) |
 | geth | `geth-witness-replay` | go-ethereum v1.17.4 `36a7dc72e`, **fork** variant | §9 |
 | revmc | `revmc-witness-adapter` | `abmcar/revmc@42d475f`, `--lane resident` | §8; its own reth baseline |
 | REVM | — | in-record | `phaseWallTimeNs.rethRevmExecute`, from the same DTVM/evmone records (§3) |
 
-Give DTVM its commit, not its branch name. `03b542e` is the head of
-`feat/evm-persistent-code-cache` at the time of writing and is the tree the
-measured library was built from; it carries the persistent code cache, the
-module-cache bound of §5, and two engine fixes that landed upstream as
-DTVMStack/DTVM#605 (gas on an exceptional halt) and #604 (a null dereference
-misreported as an EVM memory fault). The branch keeps moving; the commit does
-not — the same reason §8 pins revmc by sha.
+Give DTVM its commit, not its branch name. **`8403be3` on
+`fix/evm-jit-null-membase`** is the tree the measured library was built from. It is
+`feat/evm-persistent-code-cache` at `03b542e` plus one commit, and every part of it
+matters here:
+
+| in `8403be3` | what it does | upstream |
+|---|---|---|
+| persistent code cache | `code_cache_dir` / `code_cache_mode` (§5) | fork only |
+| `37b36b1` | `DTVM_EVM_MAX_MODULE_CACHE_SIZE` — without it the bound is a compile-time 4096 and this corpus is unrunnable | fork only |
+| `ea8f80d` | gas on an exceptional halt | DTVMStack/DTVM#605 |
+| `03b542e` | a null dereference reported as an EVM memory fault, i.e. as a *consensus* status | DTVMStack/DTVM#604 |
+| `8403be3` | the JIT reloads its cached memory base, not only the cached size | DTVMStack/DTVM#607 |
+
+**Building `03b542e` instead is not a smaller version of this — it does not run.**
+Blocks 25818502 and 25818530 fault in generated code without `8403be3`, and because
+`03b542e` reclassifies that fault as an internal error rather than a consensus one,
+the replay fails closed instead of silently producing wrong gas. You would get 998
+of 1000 blocks and no way to form the full intersection.
+
+The branch keeps moving; the commit does not — the same reason §8 pins revmc by sha.
 
 Two of these run against a different host baseline than the others: revmc (and
 its native-REVM reference leg) is built on upstream reth v2.5.0-dev / revm 42,
