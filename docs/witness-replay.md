@@ -629,6 +629,7 @@ medians over each engine's repetitions.
 | REVM 41 | `rethRevmExecute` | 61.96 ms | 69.71 | 123.22 | 0.71x |
 | REVM 42 | `revmReferenceElapsedNs` | 66.79 ms | 76.87 | 135.79 | 0.76x |
 | **DTVM** | `rethSubjectExecute` | **87.15 ms** | 94.99 | 160.86 | 1.00x |
+| DTVM, module only | `jitActiveWallNs` net of lookups | 73.30 ms | — | — | 0.84x |
 | geth | `gethExecute` | 221.81 ms | 1366.83 | 4340.46 | 2.52x |
 | evmone | `rethSubjectExecute` | 239.02 ms | 256.74 | 434.21 | 2.70x |
 
@@ -636,6 +637,22 @@ The per-block table is checked in as
 [`docs/results/five-engine-1000.tsv`](./results/five-engine-1000.tsv) — one row per
 block, one column per engine, so any claim here can be recomputed rather than taken
 on trust.
+
+The `dtvm_module_ms` column and the "module only" row peel the DTVM figure down to
+the compiled module itself, in four steps that are subtractive because they come from
+one run: `rethSubjectExecute` 87.36 → `rethSubjectRunExecLoop` 80.41 (−6.95, reth's
+executor construction and state extraction) → `topLevelExecuteWallNs` 76.66 (−3.75,
+entering DTVM) → `jitActiveWallNs` net 73.30 (−3.37, the module-cache lookup and its
+full-bytecode `memcmp`). Those come from the diagnostic build, which on the same
+blocks runs 0.49% slower than the production build (p10–p90 1.0000–1.0105) — the
+bias runs against DTVM, not for it.
+
+**Do not divide 73.30 by REVM.** Of the three available ratios only the middle one is
+symmetric: wide/wide 1.41x, tight/tight **1.45x**, net/tight 1.32x. The last is
+DTVM-favourable because the module lookup was removed from one side and REVM has no
+module cache to remove anything from — its equivalent per-contract analysis is inside
+its execution and cannot be separated. 73.30 answers "how fast is the compiled module",
+not "how much faster is DTVM than REVM"; for that, use 1.45x.
 
 Read the per-block ratio spread, not just the median. evmone's is 2.22x–3.44x
 (p10–p90) and geth's is 2.11x–40.04x; a single number hides that geth is bimodal
