@@ -42,6 +42,10 @@ const DTVM_EAGER_OPTIONS: &[(&str, &str)] = &[
     ("profile_guided_jit", "false"),
 ];
 const EVMONE_ADVANCED_OPTIONS: &[(&str, &str)] = &[("advanced", "")];
+// evmone's default execution path is `baseline::execute`; `advanced` is an
+// opt-in selected through set_option. The baseline leg sets no option at all,
+// so it measures the mode an unconfigured evmone actually runs.
+const EVMONE_BASELINE_OPTIONS: &[(&str, &str)] = &[];
 
 const DTVM_EVMC_PHASE_METRICS_VERSION: u32 = 2;
 const DTVM_EVMC_PHASE_METRICS_STRUCT_SIZE: u32 = 192;
@@ -312,6 +316,7 @@ pub enum SubjectBackend {
     DtvmEager,
     DtvmProfileGuided,
     EvmoneAdvanced,
+    EvmoneBaseline,
 }
 
 impl SubjectBackend {
@@ -330,6 +335,7 @@ impl SubjectBackend {
             "dtvm-eager" => Ok(Self::DtvmEager),
             "dtvm-profile-guided" => Ok(Self::DtvmProfileGuided),
             "evmone-advanced" => Ok(Self::EvmoneAdvanced),
+            "evmone-baseline" => Ok(Self::EvmoneBaseline),
             value => Err(DtvmError::InvalidSubjectBackend(value.to_owned())),
         }
     }
@@ -339,27 +345,28 @@ impl SubjectBackend {
             Self::DtvmEager => "dtvm-eager",
             Self::DtvmProfileGuided => "dtvm-profile-guided",
             Self::EvmoneAdvanced => "evmone-advanced",
+            Self::EvmoneBaseline => "evmone-baseline",
         }
     }
 
     const fn factory_symbol(self) -> &'static [u8] {
         match self {
             Self::DtvmEager | Self::DtvmProfileGuided => b"evmc_create_dtvmapi\0",
-            Self::EvmoneAdvanced => b"evmc_create_evmone\0",
+            Self::EvmoneAdvanced | Self::EvmoneBaseline => b"evmc_create_evmone\0",
         }
     }
 
     const fn factory_symbol_name(self) -> &'static str {
         match self {
             Self::DtvmEager | Self::DtvmProfileGuided => "evmc_create_dtvmapi",
-            Self::EvmoneAdvanced => "evmc_create_evmone",
+            Self::EvmoneAdvanced | Self::EvmoneBaseline => "evmc_create_evmone",
         }
     }
 
     const fn expected_vm_name(self) -> &'static str {
         match self {
             Self::DtvmEager | Self::DtvmProfileGuided => "dtvm",
-            Self::EvmoneAdvanced => "evmone",
+            Self::EvmoneAdvanced | Self::EvmoneBaseline => "evmone",
         }
     }
 
@@ -368,6 +375,7 @@ impl SubjectBackend {
             Self::DtvmEager => DTVM_EAGER_OPTIONS,
             Self::DtvmProfileGuided => DTVM_PROFILE_GUIDED_OPTIONS,
             Self::EvmoneAdvanced => EVMONE_ADVANCED_OPTIONS,
+            Self::EvmoneBaseline => EVMONE_BASELINE_OPTIONS,
         }
     }
 
@@ -1536,6 +1544,10 @@ mod tests {
             SubjectBackend::parse("evmone-advanced").unwrap(),
             SubjectBackend::EvmoneAdvanced
         );
+        assert_eq!(
+            SubjectBackend::parse("evmone-baseline").unwrap(),
+            SubjectBackend::EvmoneBaseline
+        );
         assert!(matches!(
             SubjectBackend::parse(""),
             Err(DtvmError::InvalidSubjectBackend(value)) if value.is_empty()
@@ -1556,12 +1568,24 @@ mod tests {
             SubjectBackend::EvmoneAdvanced.factory_symbol(),
             b"evmc_create_evmone\0"
         );
+        assert_eq!(
+            SubjectBackend::EvmoneBaseline.factory_symbol(),
+            b"evmc_create_evmone\0"
+        );
         assert_eq!(SubjectBackend::DtvmEager.expected_vm_name(), "dtvm");
         assert_eq!(SubjectBackend::DtvmProfileGuided.expected_vm_name(), "dtvm");
         assert_eq!(SubjectBackend::EvmoneAdvanced.expected_vm_name(), "evmone");
+        assert_eq!(SubjectBackend::EvmoneBaseline.expected_vm_name(), "evmone");
         assert!(SubjectBackend::DtvmEager.requires_strict_address_cache());
         assert!(SubjectBackend::DtvmProfileGuided.requires_strict_address_cache());
         assert!(!SubjectBackend::EvmoneAdvanced.requires_strict_address_cache());
+        assert!(!SubjectBackend::EvmoneBaseline.requires_strict_address_cache());
+        // The two evmone legs differ only in whether `advanced` is opted into.
+        assert_eq!(
+            SubjectBackend::EvmoneAdvanced.mandatory_options(),
+            &[("advanced", "")]
+        );
+        assert!(SubjectBackend::EvmoneBaseline.mandatory_options().is_empty());
     }
 
     #[test]
