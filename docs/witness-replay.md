@@ -310,7 +310,13 @@ then fails loudly with `capability_missing` rather than falling back. A node
 built from this repository (reth 2.4.1 base) serves it; if your node is
 older, upgrade it or build `reth` from here. Witness generation cost rises steeply
 with the block's depth below the node's head (see `mainnet-replay.md` §4);
-for blocks well below the head, raise or disable the database
+Depth is a capability question before it is a cost question: serving a witness for
+an old block requires the node to reconstruct that block's state, so a pruned node
+may be unable to serve this corpus at all, and a full node may only manage it within
+its reconstruction range (see `mainnet-replay.md` §4, which also notes the memory
+cost). If your node cannot reach these blocks, capture your own window at the
+finalized tip instead — engine comparisons are internal to a corpus. Where depth is
+merely expensive rather than impossible, raise or disable the database
 read-transaction timeout (`--db.read-transaction-timeout 0`) — deep witness
 generation can exceed the 300 s default. The finalized-tip loop above avoids
 this cost entirely; it only applies when capturing a pinned historical window
@@ -429,6 +435,14 @@ The patches were derived from the tree that produced the measured binary; run
 This is the concrete campaign the sections above serve: DTVM, evmone, geth,
 revmc, and REVM over one thousand consecutive mainnet blocks.
 
+### 10.0 Pin this document too
+
+This file pins every dependency by commit and is itself addressed by a branch, which
+is the same failure it warns about. The campaign described here was run from
+**`abmcar/reth@6b9d316c32f73dfee0e267f82b7d0f5bf2939f48`** on
+`evmc-extra-access-fix`. Check that out rather than the branch tip if you want the
+harness exactly as measured.
+
 ### 10.1 The corpus
 
 Blocks **25817835–25818834**, 1000 consecutive blocks with no gaps, ~16 GB of
@@ -452,11 +466,12 @@ engines across *different* block sets — see §10.3.
 
 | Engine | Binary | Version pin | Notes |
 |---|---|---|---|
-| DTVM | `replay-batch` | `abmcar/DTVM@8403be3f7f390afe9ea4d5366305ea7b9da24fa0` | `RETH_SUBJECT_BACKEND=dtvm-eager`; needs `DTVM_EVM_MAX_MODULE_CACHE_SIZE=131072` (§5 — do not size this by unique-contract count) and a metrics-OFF build for `--production-timing` |
-| evmone | `replay-block` | `DTVMStack/evmone` v0.18.0, sha256 `1316fad3aac3ee21…` | `RETH_SUBJECT_BACKEND=evmone-advanced`; no batch path (§6) |
+| DTVM (timing) | `replay-batch` | `abmcar/DTVM@8403be3f7f390afe9ea4d5366305ea7b9da24fa0` | `RETH_SUBJECT_BACKEND=dtvm-eager`; needs `DTVM_EVM_MAX_MODULE_CACHE_SIZE=131072` (§5 — do not size this by unique-contract count) and a metrics-OFF build for `--production-timing` |
+| evmone | `replay-block` | `DTVMStack/evmone@a4a0e47aff903a47a6be133c67ad106c706fe566` | `RETH_SUBJECT_BACKEND=evmone-advanced`; no batch path (§6) |
 | geth | `geth-witness-replay` | go-ethereum v1.17.4 `36a7dc72e`, **fork** variant | §9 |
 | revmc | `revmc-witness-adapter` | `abmcar/revmc@42d475f`, `--lane resident` | §8; its own reth baseline |
-| REVM | — | in-record | `phaseWallTimeNs.rethRevmExecute`, from the same DTVM/evmone records (§3) |
+| DTVM (qualification) | `replay-batch`, default mode | `abmcar/DTVM@f9e25be` on `metrics/evm-phase-metrics-on-8403be3` | the same tree with `patches/dtvm-evmc-phase-metrics.patch` applied and `-DZEN_ENABLE_EVMC_PHASE_METRICS=ON`. The patch is written against `338d123` and does **not** apply to `8403be3`; that branch records the resolution so you do not have to redo it. Needed for §10.4 step 2 |
+| REVM 41 | — | in-record | `phaseWallTimeNs.rethRevmExecute` **from the DTVM production-timing records only**. The evmone leg carries the same field, but as a cold fresh-process figure against the DTVM batch's hot 8-pass median; mixing the two puts different measurements in one cell |
 
 Give DTVM its commit, not its branch name. **`8403be3` on
 `fix/evm-jit-null-membase`** is the tree the measured library was built from. It is
@@ -490,6 +505,35 @@ about 80 minutes. At the *default* L1 bound of 4096 it degrades to hundreds of
 hours from eviction thrash, which is why §5's environment variable is not
 optional here — and §5 explains why 16384 is also not enough despite the corpus
 having only 15,415 unique contracts.
+
+### 10.2b Repetitions and extraction, per leg
+
+`replay-batch` records carry `timingUse` and a `correctness` wrapper; a bare
+`replay-block` or `geth-witness-replay` report carries neither, so §3's jq recipe
+does not apply to those legs. What the published table used:
+
+| leg | invocation | reps/block | keep a sample when | field | aggregate |
+|---|---|---|---|---|---|
+| DTVM | `replay-batch --production-timing`, one process, whole corpus | 8 (`M0`–`M7`) | `timingUse && correctness.passed` | `replay.phaseWallTimeNs.rethSubjectExecute` | median over the 8 |
+| REVM 41 | same records | 8 | same | `replay.phaseWallTimeNs.rethRevmExecute` | median over the 8 |
+| evmone | `replay-block`, fresh process each time | 8 | `postStateRootVerified` | `replay.phaseWallTimeNs.rethSubjectExecute` | median over the 8 |
+| geth | `geth-witness-replay -input`, fresh process each time | 8 | `postStateRootVerified` | `phaseWallTimeNs.gethExecute` | median over the 8 |
+| revmc | `revmc-witness-adapter --lane resident`, chunks of 100 bundles | 1 | `allBlocksMatch` on the chunk | `blocks[].measuredElapsedNs` | single value |
+| REVM 42 | same revmc invocation | 1 | same | `blocks[].revmReferenceElapsedNs` | single value |
+
+No repetitions are discarded: for the batch legs the discard is the protocol's own
+(`C0`, `G0`, `W0`, `W1` are not `timingUse`), and the per-process legs have no warm-up
+to discard because each invocation starts cold by construction. revmc is measured once
+per block because its `resident` lane already excludes compilation by starting the
+timer after its JIT queues drain, so a repetition would measure the same warm state.
+
+For a bare report the gate is the boolean itself:
+
+```bash
+jq -r 'select(.postStateRootVerified) | [.blockNumber, .phaseWallTimeNs.gethExecute] | @tsv'
+```
+
+`docs/results/five-engine-1000.tsv` is the result of applying exactly this table.
 
 ### 10.3 Use the intersection, not each engine's own subset
 
@@ -531,6 +575,27 @@ timed in one pass at all.
 4. Extract with the `jq` recipe in §3, pairing each subject median against the
    `rethRevmExecute` median from the same records.
 
+**Run every measured invocation alone.** Nothing in any output records what else
+was on the machine, and the temptation is strong: the per-process legs (evmone, geth)
+are one invocation per bundle, so `xargs -P$(nproc)` over a thousand bundles is the
+obvious move, and running two engine legs at once would halve a long night. Do not.
+Concurrency inflates the measured phase, and — this is the part that matters — it
+does so by **different amounts for different engines**, so it moves the cross-engine
+ratios this campaign exists to report, not just the absolute numbers. Calibrated on
+60 blocks, three repetitions, against a serial baseline:
+
+| parallelism | geth | evmone |
+|---|---|---|
+| 8 concurrent | +2.9% (p90 +7.5%) | +4.8% (p90 +8.8%) |
+| 16 concurrent | +10.7% (p90 +18.2%) | +11.6% (p90 +27.8%) |
+
+A 56-core machine does not absorb this; the effect is there at 8 concurrent
+processes on 56 cores. The published table was produced with the DTVM leg alone at
+parallelism 1 and the other three at 4, and each leg wrote its own
+`legs/<leg>.env.json` recording parallelism, start time and load average — because
+that boundary is invisible in the JSON otherwise. Parallelism is fine for the
+*correctness* scan of step 1, which is not a measurement.
+
 Steps 2 and 3 are two different runs against two different libraries by
 design; skipping step 2 leaves the timing valid but unqualified.
 
@@ -550,7 +615,7 @@ medians over each engine's repetitions.
 | engine | boundary | median | mean | p90 | vs DTVM (per-block median) |
 |---|---|---:|---:|---:|---:|
 | revmc | adapter resident timer | 55.51 ms | 62.73 | 109.89 | 0.63x |
-| REVM 41 | `rethRevmExecute` | 64.90 ms | 72.78 | 128.10 | 0.74x |
+| REVM 41 | `rethRevmExecute` | 61.96 ms | 69.71 | 123.22 | 0.71x |
 | REVM 42 | `revmReferenceElapsedNs` | 66.79 ms | 76.87 | 135.79 | 0.76x |
 | **DTVM** | `rethSubjectExecute` | **87.15 ms** | 94.99 | 160.86 | 1.00x |
 | geth | `gethExecute` | 221.81 ms | 1366.83 | 4340.46 | 2.52x |
@@ -563,8 +628,8 @@ on trust.
 
 Read the per-block ratio spread, not just the median. evmone's is 2.22x–3.44x
 (p10–p90) and geth's is 2.11x–40.04x; a single number hides that geth is bimodal
-(§5 of the engine notes, and 290 of the 1000 blocks exceed two seconds while the
-median is 221 ms).
+(290 of the 1000 blocks exceed two seconds while the median is 221 ms, and those
+290 carry 90% of geth's total time).
 
 The two REVM legs are the same engine on different host baselines — revm 41 inside
 this repository, revm 42 inside the revmc adapter's upstream reth. Their per-block
@@ -576,9 +641,8 @@ without measuring: fine to cross for an aggregate, not fine to cross for one blo
 DTVM and evmone are measured through `rethSubjectExecute`, which includes reth-side
 executor construction and state extraction; geth's `gethExecute` is geth's own
 execution phase and never pays that; revmc's timer starts after its JIT queues
-drain. The EVMC legs therefore carry a harness cost the other two do not — about
-4% for DTVM, measured by comparing against `rethSubjectRunExecLoop` (87.15 vs
-80.09 ms). Deeper still, DTVM's figure contains every host callback crossing the
+drain. The EVMC legs therefore carry a harness cost the other two do not — 8.5%
+for DTVM, measured by comparing against `rethSubjectRunExecLoop` (87.15 vs 80.09 ms). Deeper still, DTVM's figure contains every host callback crossing the
 EVMC bridge and, on this corpus, about 2,100 module-cache lookups per block each
 running a full-bytecode `memcmp` under the mandatory strict validation. Read the
 DTVM number as *DTVM through the EVMC bridge with strict validation*, not as a
