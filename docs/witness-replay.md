@@ -54,11 +54,11 @@ The harness binaries read the `RETH_SUBJECT_*` family (the same one
 
 | Variable | Meaning |
 |---|---|
-| `RETH_SUBJECT_BACKEND` | `dtvm-eager`, `dtvm-profile-guided`, `evmone-advanced` |
+| `RETH_SUBJECT_BACKEND` | `dtvm-eager`, `dtvm-profile-guided`, `evmone-advanced`, `evmone-baseline` |
 | `RETH_SUBJECT_LIBRARY` | path to the EVMC shared library |
 | `RETH_SUBJECT_LIBRARY_SHA256` | expected SHA-256 of that file; startup fails on mismatch |
 | `DTVM_EVM_STRICT_ADDR_CACHE_VALIDATION` | must be `true` for the DTVM backends |
-| `RETH_SUBJECT_EVMC_OPTIONS` | optional; comma-separated `name=value` EVMC options applied after the mandatory ones, e.g. `code_cache_dir=/var/cache/dtvm,code_cache_mode=rw`. A malformed entry, or one the library rejects, fails startup with an error rather than being silently ignored. Which names are accepted depends entirely on the loaded library — see §5. |
+| `RETH_SUBJECT_EVMC_OPTIONS` | optional; comma-separated `name=value` EVMC options applied after the mandatory ones, e.g. `code_cache_dir=/var/cache/dtvm,code_cache_mode=rw`. A malformed entry, or one the library rejects, fails startup with an error rather than being silently ignored. Which names are accepted depends entirely on the loaded library — see §5. Because these are applied *after* the mandatory options, they can override one: `mode=interpreter` turns a `dtvm-eager` leg into a DTVM interpreter leg with no code change (§11.1). Note the record still reports `backend=dtvm-eager`, so the true mode has to be recorded out of band. |
 
 The `DTVM_LIBRARY` / `DTVM_LIBRARY_SHA256` names that appear in
 `witness-db/README.md` and in test code are consumed **only by `cargo test`**;
@@ -234,8 +234,20 @@ unpatched tree.
 Pinned source: [`DTVMStack/evmone`](https://github.com/DTVMStack/evmone) at
 `a4a0e47aff903a47a6be133c67ad106c706fe566` (`feat: update evmc (#9)`), built
 unmodified with its standard CMake
-setup; the artefact is `libevmone.so`. Select it with
-`RETH_SUBJECT_BACKEND=evmone-advanced`.
+setup; the artefact is `libevmone.so`. One library, two legs:
+
+| Backend | EVMC option set | What it selects |
+|---|---|---|
+| `evmone-advanced` | `("advanced", "")` | the Advanced interpreter |
+| `evmone-baseline` | *none* | the Baseline interpreter |
+
+**Baseline is evmone's default, and has been since 0.9.0 (2022-08-30).**
+`lib/evmone/vm.cpp` installs `baseline::execute` in the VM constructor;
+`advanced` is an opt-in that overwrites it. Upstream's own release notes give
+Baseline as 18% faster than Advanced with "over 8x smaller code analysis cost",
+which is why they made the switch. On this corpus the gap is larger still —
+§11.2. An `evmone-advanced` number is therefore a measurement of the
+**non-default** interpreter and should say so.
 
 ---
 
@@ -245,6 +257,7 @@ setup; the artefact is `libevmone.so`. Select it with
 |---|---|---|
 | `dtvm-eager` | yes | both modes of §3/§4 |
 | `dtvm-profile-guided` | **no** | only `replay-block`; each invocation starts a fresh VM with an empty profile window, so per-bundle runs never accumulate enough heat to trigger JIT — numbers reflect near-pure interpretation |
+| `evmone-baseline` | **no** | `replay-block` only. `replay-evmone-batch` rejects it by design: that path exists to read the instrumented Advanced diagnostic ABI, which has no Baseline counterpart. Timing legs use `replay-block`, so nothing is lost. |
 | `evmone-advanced` | **no** (`replay-evmone-batch` only) | `replay-evmone-batch` refuses to start unless the library exports `evmone_get_advanced_diagnostic_metrics`, an instrumentation symbol that upstream evmone does not provide and that this repository does not ship. Per-bundle `replay-block` runs remain available; evmone's per-call code analysis has no persistent cross-process cache, so fresh-process runs do not change what is measured. |
 
 ---
@@ -430,7 +443,9 @@ engines across *different* block sets — see §10.3.
 | Engine | Binary | Version pin | Notes |
 |---|---|---|---|
 | DTVM | `replay-batch` | `abmcar/DTVM@03b542e6b765685795dee2d4a8a3efcba91d0e2a` | `RETH_SUBJECT_BACKEND=dtvm-eager`; needs `DTVM_EVM_MAX_MODULE_CACHE_SIZE=16384` (§5) and a metrics-OFF build for `--production-timing` |
-| evmone | `replay-block` | `DTVMStack/evmone` v0.18.0, sha256 `1316fad3aac3ee21…` | `RETH_SUBJECT_BACKEND=evmone-advanced`; no batch path (§6) |
+| evmone (advanced) | `replay-block` | `DTVMStack/evmone` v0.18.0, sha256 `1316fad3aac3ee21…` | `RETH_SUBJECT_BACKEND=evmone-advanced`; no batch path (§6). The **non-default** interpreter — see §5 and §11.2 |
+| evmone (baseline) | `replay-block` | same library | `RETH_SUBJECT_BACKEND=evmone-baseline`; needs the adapter at `abmcar/reth@evmone-baseline-backend` (`f1bc29bfa`). evmone's default mode; §11.2 |
+| DTVM (interpreter) | `replay-batch` | the same commit and library as the DTVM timing leg | append `mode=interpreter` to `RETH_SUBJECT_EVMC_OPTIONS`. Everything else identical to the DTVM leg — that is the point of the leg. §11.1 |
 | geth | `geth-witness-replay` | go-ethereum v1.17.4 `36a7dc72e`, **fork** variant | §9 |
 | revmc | `revmc-witness-adapter` | `abmcar/revmc@42d475f`, `--lane resident` | §8; its own reth baseline |
 | REVM | — | in-record | `phaseWallTimeNs.rethRevmExecute`, from the same DTVM/evmone records (§3) |
@@ -493,3 +508,147 @@ a single failing block aborts the entire DTVM leg rather than skipping it.
 
 Steps 2 and 3 are two different runs against two different libraries by
 design; skipping step 2 leaves the timing valid but unqualified.
+
+---
+
+## 11. Two mode legs: DTVM interpreter and evmone baseline
+
+Added 2026-08-30 on the same 1000-block corpus. Neither is a new engine. Both
+hold the harness fixed and vary exactly one thing, which is what makes them
+readable where a cross-engine ratio is not.
+
+### 11.0 Provenance groups — read this before quoting any number
+
+The legs were not all measured under the same conditions, and the difference is
+large enough to swamp what is being measured. Every column carries a group tag:
+
+| Group | What | Conditions |
+|---|---|---|
+| **S** | the sealed campaign (§10) | 2026-08-29, four legs running concurrently at P=12 each, `bin-c3b-campaign/` |
+| **I** | the DTVM interpreter leg | 2026-08-30, P=1, idle box, the **same binary and library** as the group-S DTVM leg |
+| **N** | the evmone pair | 2026-08-30, P=12, idle box, `bin-baselines/replay-block`, both modes back to back |
+
+**Compare within a group.** Across groups, only where a control licenses it —
+see §11.3. In particular a group-N evmone number must not be substituted into
+the §10 table: §11.4 measures that error at 16%.
+
+### 11.1 DTVM interpreter vs its own multipass JIT
+
+`mode=interpreter` appended to `RETH_SUBJECT_EVMC_OPTIONS`. No code change: the
+extra options are applied after the mandatory ones, so this overrides the
+`mode=multipass` that the `dtvm-eager` backend sets, and DTVM's `set_option`
+accepts it (`src/vm/dt_evmc_vm.cpp:339`).
+
+**Verify the switch took effect; do not assume it.** A first 5-block probe put
+the interpreter at 1.03x the JIT, which is not credible on its face — the
+obvious suspect being that `code_cache_mode=ro` was feeding precompiled machine
+code regardless of mode. Source says otherwise (`dt_evmc_vm.cpp:856` branches
+into `executeInterpreterFastPath` before the JIT path, and the code cache is
+consulted only on the JIT side), and the decisive check is empirical: same
+binary, same library, same 5 blocks, **cache removed**, only `mode=` differing —
+the interpreter produced all 60 records in 22.5 s while multipass had emitted 2
+records after 9.5 minutes and was still compiling.
+
+Result, 1000 blocks, 8 measured passes:
+
+| Leg | Median | Mean | p90 |
+|---|---|---|---|
+| DTVM multipass JIT (group S) | 87.15 ms | 94.99 | 160.86 |
+| DTVM interpreter (group I) | 96.63 ms | 105.19 | 178.87 |
+
+Per-block **1.106x** [p10 1.072, p90 1.145].
+
+**The multipass JIT buys about 10% over DTVM's own interpreter on real mainnet
+blocks.** Two things this does *not* say:
+
+- It is a **system-level** ratio, not a code-generation ratio. Both legs pay the
+  same L1 lookup and the same strict full-bytecode `validateCodeMatch` memcmp —
+  `executeInterpreterFastPath` calls `findModuleCached` too
+  (`dt_evmc_vm.cpp:719`). An equal *additive* cost cancels in the **difference**,
+  not the ratio: the ~9.5 ms gap is what codegen buys, while the shared cost
+  dilutes the ratio. Using the lookup-subtracted JIT figure (73.30 ms) puts the
+  codegen-only ratio nearer 1.13x — an estimate from a different build, not a
+  measurement of this leg.
+- It says nothing about DTVM's distance from REVM. DTVM's interpreter at
+  96.63 ms is still 1.54x REVM's interpreter at 61.96 ms, so that gap is not a
+  codegen story either.
+
+### 11.2 evmone baseline vs advanced
+
+Both modes, same binary, back to back, 8 reps:
+
+| Leg | Median | Mean | p90 |
+|---|---|---|---|
+| evmone advanced (group N) | 199.56 ms | 214.57 | 353.32 |
+| evmone baseline (group N) | 123.61 ms | 132.69 | 223.44 |
+
+Per-block **0.614x** [p10 0.563, p90 0.683] — Baseline is **1.63x faster**, a
+38% reduction. Upstream measured 18% on their own suite when they made Baseline
+the default in 0.9.0. This corpus roughly doubles that, and the reason is
+measurable rather than assumed.
+
+Neither path caches analysis across calls; both call `analyze()` at the top of
+every `execute()` (`advanced_execution.cpp:26`, `baseline_execution.cpp:309`).
+Per call on N bytes of code, Advanced reserves `(N+2)x16 B` of `Instruction`
+plus `(N+1)x32 B` of `intx::uint256` push values — about `48N` — against
+Baseline's `~1.13N` (a code copy, padding, and a JUMPDEST bitset).
+
+Correlating Advanced's per-block excess over Baseline (median 76.13 ms):
+
+| Predictor | raw r | partial r |
+|---|---|---|
+| witness bundle size (code/state volume) | +0.867 | **+0.612** (controlling for REVM time) |
+| REVM time (real execution work) | +0.780 | **+0.105** (controlling for volume) |
+
+Remove execution work and the excess still tracks volume; remove volume and
+execution work explains almost nothing. **Advanced pays per byte analysed, not
+per instruction executed** — the wrong trade for mainnet blocks, where thousands
+of frames each analyse a multi-KB contract and then execute a small slice of it.
+
+### 11.3 What licenses the one cross-group comparison
+
+Every `replay-block` and `replay-batch` record carries `rethRevmExecute`, a REVM
+41 reference leg run on the same block in the same process. It is the control:
+the same code, on the same blocks, in both the group-S and group-I runs.
+
+It agrees to **1.015x per block** [p10 1.007, p90 1.026]. That agreement — not
+an assumption about the machine — is what allows attributing 87.15 -> 96.63 ms
+to `mode=` rather than to run conditions. **Apply the same test before any other
+cross-group pairing.** The group-N REVM figure (67.56 ms) does *not* agree with
+group S, because a fresh process per block is a different caliber from a hot
+8-pass batch median; that is the §10.2 caliber split, and it is why group N is
+quoted only against itself.
+
+### 11.4 The drift that makes §11.0 a rule rather than a preference
+
+Same corpus, same evmone library, same mode. Only the harness binary and what
+else was on the machine differ:
+
+| | Median |
+|---|---|
+| advanced, sealed campaign (old binary, alongside 3 other legs) | 239.02 ms |
+| advanced, this binary (idle box, alone) | 199.56 ms |
+| | **0.842x per block** |
+
+**A 16% drift — comparable to the entire mode effect being measured.** Applying
+a mode ratio to the sealed cell without re-running the control would have
+produced a number whose dominant error term was the environment, not the mode.
+That is why §11.2 re-runs advanced instead of reusing 239.02.
+
+The transferable quantity is the **ratio**, measured with everything else held
+constant. Projecting it: `239.02 x 0.614 = 146.8 ms` is what the §10 evmone cell
+would read had it used Baseline, putting DTVM at **1.68x** rather than 2.74x
+(band 1.54x-1.87x from the p10/p90 ratios). Measured directly on an idle box
+instead, DTVM 87.15 vs Baseline 123.61 is **1.42x**. Say which reading you mean.
+
+### 11.5 Reproducing
+
+Scripts, sealed outputs, the consolidated per-block table (`all-engines.tsv`)
+and the mode-switch evidence live outside this repository, in
+`dtvm-1000block-work/campaign-baselines/`. The adapter change is one enum
+variant on `abmcar/reth@evmone-baseline-backend` (`f1bc29bfa`), based on
+`62bae4417` — the exact commit the campaign binaries were built from.
+
+Correctness across all three legs: the interpreter leg passed 12000/12000
+records; each evmone leg passed 8000/8000 on both `postStateRootVerified` and
+`differentialMatch`. No block was excluded from any leg.
