@@ -1,0 +1,325 @@
+diff --git a/cmd/geth-witness-replay/main.go b/cmd/geth-witness-replay/main.go
+new file mode 100644
+index 0000000..e9063fb
+--- /dev/null
++++ b/cmd/geth-witness-replay/main.go
+@@ -0,0 +1,319 @@
++// geth-witness-replay strictly replays one frozen Reth execution-witness
++// bundle with Geth's native state processor.
++package main
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"flag"
++	"fmt"
++	"os"
++	"time"
++
++	"github.com/ethereum/go-ethereum/common"
++	"github.com/ethereum/go-ethereum/common/hexutil"
++	"github.com/ethereum/go-ethereum/core"
++	"github.com/ethereum/go-ethereum/core/stateless"
++	"github.com/ethereum/go-ethereum/core/types"
++	"github.com/ethereum/go-ethereum/core/vm"
++	"github.com/ethereum/go-ethereum/params"
++	"github.com/ethereum/go-ethereum/rlp"
++	"github.com/ethereum/go-ethereum/trie"
++)
++
++const (
++	gethVersion = "v1.17.4"
++	gethCommit  = "36a7dc72e96b3f42846be925cfeb2fad18489917"
++)
++
++type encodedWitness struct {
++	Headers []hexutil.Bytes `json:"headers"`
++	Codes   []hexutil.Bytes `json:"codes"`
++	State   []hexutil.Bytes `json:"state"`
++	Keys    []hexutil.Bytes `json:"keys"`
++}
++
++type witnessBundle struct {
++	TargetHeader    hexutil.Bytes  `json:"targetHeader"`
++	TargetBlockHash common.Hash    `json:"targetBlockHash"`
++	TargetBlock     hexutil.Bytes  `json:"targetBlock"`
++	Witness         encodedWitness `json:"witness"`
++}
++
++type commitments struct {
++	GasUsed      bool `json:"gasUsed"`
++	ReceiptsRoot bool `json:"receiptsRoot"`
++	LogsBloom    bool `json:"logsBloom"`
++	RequestsHash bool `json:"requestsHash"`
++	BlobGasUsed  bool `json:"blobGasUsed"`
++}
++
++type phaseWallTimeNs struct {
++	PrepareImportPreflight uint64 `json:"prepareImportPreflight"`
++	GethExecute            uint64 `json:"gethExecute"`
++	ValidationRoots        uint64 `json:"validationRoots"`
++}
++
++type replayReport struct {
++	Schema                   string          `json:"schema"`
++	Engine                   string          `json:"engine"`
++	EngineVersion            string          `json:"engineVersion"`
++	EngineCommit             string          `json:"engineCommit"`
++	RawBound                 bool            `json:"rawBound"`
++	PreExecutionCommitments  bool            `json:"preExecutionCommitments"`
++	PostExecutionCommitments commitments     `json:"postExecutionCommitments"`
++	PreStateRoot             common.Hash     `json:"preStateRoot"`
++	PreStateRootVerified     bool            `json:"preStateRootVerified"`
++	PostStateRoot            common.Hash     `json:"postStateRoot"`
++	PostStateRootVerified    bool            `json:"postStateRootVerified"`
++	WitnessKeyCount          int             `json:"witnessKeyCount"`
++	WitnessKeyLengthsValid   bool            `json:"witnessKeyLengthsValidated"`
++	WitnessKeysExecutionRole string          `json:"witnessKeysExecutionRole"`
++	BlockNumber              uint64          `json:"blockNumber"`
++	BlockHash                common.Hash     `json:"blockHash"`
++	RawBlockBytes            int             `json:"rawBlockBytes"`
++	TransactionCount         int             `json:"transactionCount"`
++	GasUsed                  uint64          `json:"gasUsed"`
++	BlobGasUsed              uint64          `json:"blobGasUsed"`
++	PhaseWallTimeNs          phaseWallTimeNs `json:"phaseWallTimeNs"`
++}
++
++func main() {
++	input := flag.String("input", "", "frozen Reth witness bundle JSON")
++	flag.Parse()
++	if *input == "" {
++		fatal("-input is required")
++	}
++	raw, err := os.ReadFile(*input)
++	if err != nil {
++		fatal("read input: %v", err)
++	}
++	report, err := replay(raw)
++	if err != nil {
++		fatal("%v", err)
++	}
++	encoder := json.NewEncoder(os.Stdout)
++	encoder.SetEscapeHTML(false)
++	if err := encoder.Encode(report); err != nil {
++		fatal("encode report: %v", err)
++	}
++}
++
++func replay(raw []byte) (*replayReport, error) {
++	prepareStarted := time.Now()
++	var bundle witnessBundle
++	if err := json.Unmarshal(raw, &bundle); err != nil {
++		return nil, fmt.Errorf("decode bundle JSON: %w", err)
++	}
++	block, witness, preStateRoot, err := validateBundle(&bundle)
++	if err != nil {
++		return nil, err
++	}
++	preflightElapsed := time.Since(prepareStarted)
++
++	execStarted := time.Now()
++	stateRoot, receiptRoot, err := core.ExecuteStateless(
++		context.Background(), params.MainnetChainConfig, vm.Config{}, block, witness,
++	)
++	execWhole := time.Since(execStarted)
++	if err != nil {
++		return nil, fmt.Errorf("stateless execution: %w", err)
++	}
++	validationStarted := time.Now()
++	if stateRoot != block.Root() {
++		return nil, fmt.Errorf("state root mismatch: expected %x, got %x", block.Root(), stateRoot)
++	}
++	if receiptRoot != block.ReceiptHash() {
++		return nil, fmt.Errorf("receipts root mismatch: expected %x, got %x", block.ReceiptHash(), receiptRoot)
++	}
++	validationElapsed := time.Since(validationStarted)
++	blobGasUsed := uint64(0)
++	if block.BlobGasUsed() != nil {
++		blobGasUsed = *block.BlobGasUsed()
++	}
++	return &replayReport{
++		Schema:                  "geth-witness-replay.report.v1-stock",
++		Engine:                  "geth-native",
++		EngineVersion:           gethVersion,
++		EngineCommit:            gethCommit,
++		RawBound:                true,
++		PreExecutionCommitments: true,
++		PostExecutionCommitments: commitments{
++			GasUsed:      true,
++			ReceiptsRoot: true,
++			LogsBloom:    true,
++			RequestsHash: true,
++			BlobGasUsed:  true,
++		},
++		PreStateRoot:             preStateRoot,
++		PreStateRootVerified:     true,
++		PostStateRoot:            stateRoot,
++		PostStateRootVerified:    true,
++		WitnessKeyCount:          len(bundle.Witness.Keys),
++		WitnessKeyLengthsValid:   true,
++		WitnessKeysExecutionRole: "auxiliary-preserved-not-consumed",
++		BlockNumber:              block.NumberU64(),
++		BlockHash:                block.Hash(),
++		RawBlockBytes:            len(bundle.TargetBlock),
++		TransactionCount:         len(block.Transactions()),
++		GasUsed:                  block.GasUsed(),
++		BlobGasUsed:              blobGasUsed,
++		PhaseWallTimeNs: phaseWallTimeNs{
++			PrepareImportPreflight: uint64(preflightElapsed.Nanoseconds()),
++			GethExecute:            uint64(execWhole.Nanoseconds()),
++			ValidationRoots:        uint64(validationElapsed.Nanoseconds()),
++		},
++	}, nil
++}
++
++func validateBundle(bundle *witnessBundle) (*types.Block, *stateless.Witness, common.Hash, error) {
++	if len(bundle.TargetHeader) == 0 || len(bundle.TargetBlock) == 0 || bundle.TargetBlockHash == (common.Hash{}) {
++		return nil, nil, common.Hash{}, fmt.Errorf("targetHeader, targetBlock, and targetBlockHash are required")
++	}
++	targetHeader, err := decodeCanonicalHeader(bundle.TargetHeader)
++	if err != nil {
++		return nil, nil, common.Hash{}, fmt.Errorf("target header: %w", err)
++	}
++	if targetHeader.Hash() != bundle.TargetBlockHash {
++		return nil, nil, common.Hash{}, fmt.Errorf("target header hash mismatch: expected %x, got %x", bundle.TargetBlockHash, targetHeader.Hash())
++	}
++	var block types.Block
++	if err := rlp.DecodeBytes(bundle.TargetBlock, &block); err != nil {
++		return nil, nil, common.Hash{}, fmt.Errorf("target block RLP: %w", err)
++	}
++	canonicalBlock, err := rlp.EncodeToBytes(&block)
++	if err != nil || !bytes.Equal(canonicalBlock, bundle.TargetBlock) {
++		return nil, nil, common.Hash{}, fmt.Errorf("target block is not canonical RLP")
++	}
++	if block.Hash() != bundle.TargetBlockHash {
++		return nil, nil, common.Hash{}, fmt.Errorf("target block hash mismatch: expected %x, got %x", bundle.TargetBlockHash, block.Hash())
++	}
++	blockHeader, err := rlp.EncodeToBytes(block.Header())
++	if err != nil || !bytes.Equal(blockHeader, bundle.TargetHeader) {
++		return nil, nil, common.Hash{}, fmt.Errorf("target block header does not match targetHeader")
++	}
++	if err := validateBlock(&block); err != nil {
++		return nil, nil, common.Hash{}, err
++	}
++	if err := validateKeyPreimages(bundle.Witness.Keys); err != nil {
++		return nil, nil, common.Hash{}, err
++	}
++	headers, err := validateHeaderChain(bundle.Witness.Headers, targetHeader)
++	if err != nil {
++		return nil, nil, common.Hash{}, err
++	}
++	ext := &stateless.ExtWitness{
++		Headers: headers,
++		Codes:   bundle.Witness.Codes,
++		State:   bundle.Witness.State,
++		Keys:    bundle.Witness.Keys,
++	}
++	witness := new(stateless.Witness)
++	if err := witness.FromExtWitness(ext); err != nil {
++		return nil, nil, common.Hash{}, fmt.Errorf("import witness: %w", err)
++	}
++	preStateRoot := headers[len(headers)-1].Root
++	if witness.Root() != preStateRoot {
++		return nil, nil, common.Hash{}, fmt.Errorf("witness pre-state root mismatch")
++	}
++	return &block, witness, preStateRoot, nil
++}
++
++func decodeCanonicalHeader(raw []byte) (*types.Header, error) {
++	var header types.Header
++	if err := rlp.DecodeBytes(raw, &header); err != nil {
++		return nil, err
++	}
++	encoded, err := rlp.EncodeToBytes(&header)
++	if err != nil || !bytes.Equal(encoded, raw) {
++		return nil, fmt.Errorf("non-canonical RLP")
++	}
++	if header.Number == nil {
++		return nil, fmt.Errorf("missing block number")
++	}
++	return &header, nil
++}
++
++func validateHeaderChain(encoded []hexutil.Bytes, target *types.Header) ([]*types.Header, error) {
++	if len(encoded) == 0 || target.Number.Sign() == 0 {
++		return nil, fmt.Errorf("witness must contain a parent header")
++	}
++	headers := make([]*types.Header, len(encoded))
++	for i, raw := range encoded {
++		header, err := decodeCanonicalHeader(raw)
++		if err != nil {
++			return nil, fmt.Errorf("witness header %d: %w", i, err)
++		}
++		headers[i] = header
++	}
++	for i := 1; i < len(headers); i++ {
++		older, newer := headers[i-1], headers[i]
++		if newer.Number.Uint64() != older.Number.Uint64()+1 || newer.ParentHash != older.Hash() {
++			return nil, fmt.Errorf("witness header chain is not contiguous at index %d", i)
++		}
++	}
++	parent := headers[len(headers)-1]
++	if parent.Number.Uint64() != target.Number.Uint64()-1 || parent.Hash() != target.ParentHash {
++		return nil, fmt.Errorf("witness parent header does not match target block")
++	}
++	return headers, nil
++}
++
++func validateKeyPreimages(keys []hexutil.Bytes) error {
++	for i, key := range keys {
++		if len(key) != 20 && len(key) != 32 {
++			return fmt.Errorf("witness key %d has length %d; expected 20 or 32", i, len(key))
++		}
++	}
++	return nil
++}
++
++func validateBlock(block *types.Block) error {
++	header := block.Header()
++	config := params.MainnetChainConfig
++	if !config.IsOsaka(header.Number, header.Time) || !config.IsBPO2(header.Number, header.Time) {
++		return fmt.Errorf("target block is not mainnet Osaka+BPO2")
++	}
++	if header.BlockAccessListHash != nil || block.AccessList() != nil || header.SlotNumber != nil {
++		return fmt.Errorf("target block contains unsupported post-Osaka fields")
++	}
++	if block.Size() > params.MaxBlockSize {
++		return fmt.Errorf("target block exceeds Osaka size limit")
++	}
++	if err := block.SanityCheck(); err != nil {
++		return fmt.Errorf("target block sanity check: %w", err)
++	}
++	if types.CalcUncleHash(block.Uncles()) != header.UncleHash {
++		return fmt.Errorf("ommers root mismatch")
++	}
++	if types.DeriveSha(block.Transactions(), trie.NewStackTrie(nil)) != header.TxHash {
++		return fmt.Errorf("transactions root mismatch")
++	}
++	if header.WithdrawalsHash == nil || block.Withdrawals() == nil {
++		return fmt.Errorf("Osaka block is missing withdrawals")
++	}
++	if types.DeriveSha(block.Withdrawals(), trie.NewStackTrie(nil)) != *header.WithdrawalsHash {
++		return fmt.Errorf("withdrawals root mismatch")
++	}
++	if header.RequestsHash == nil {
++		return fmt.Errorf("Osaka block is missing requests hash")
++	}
++	blobCount := 0
++	for i, tx := range block.Transactions() {
++		blobCount += len(tx.BlobHashes())
++		if tx.BlobTxSidecar() != nil {
++			return fmt.Errorf("transaction %d has an unexpected blob sidecar", i)
++		}
++	}
++	expectedBlobGas := uint64(blobCount) * params.BlobTxBlobGasPerBlob
++	if header.BlobGasUsed == nil || *header.BlobGasUsed != expectedBlobGas {
++		return fmt.Errorf("blob gas mismatch: expected %d", expectedBlobGas)
++	}
++	return nil
++}
++
++func fatal(format string, args ...any) {
++	fmt.Fprintf(os.Stderr, "geth witness replay failed: "+format+"\n", args...)
++	os.Exit(1)
++}

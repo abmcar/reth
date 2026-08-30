@@ -1300,10 +1300,12 @@ unsafe fn execute_reentrant(
             ));
         }
         _ if result.0.gas_left == 0 && result.0.gas_refund == 0 => {}
-        _ => {
-            return Err(HostFault::Backend(
-                "nested DTVM halt retained gas or refund".into(),
-            ));
+        status => {
+            return Err(HostFault::Backend(format!(
+                "nested DTVM halt retained gas or refund: status {status}, gas_left {}, \
+                 gas_refund {}, child gas limit {gas}",
+                result.0.gas_left, result.0.gas_refund
+            )));
         }
     }
     let output = unsafe {

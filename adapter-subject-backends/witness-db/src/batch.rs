@@ -566,8 +566,29 @@ pub fn run_fixed_production_batch(
         return Err(BatchError::NoInputs);
     }
     let session = ReplayBatchSession::from_env_production()?;
-    for pass in FIXED_HOT_PASSES {
-        for (block_index, input) in inputs.iter().enumerate() {
+    // Measurement affordance, off by default. The protocol is pass-major: every block
+    // runs under C0, then every block under G0, and so on, so a block's modules are
+    // touched again only after the whole corpus has gone by. That is what a syncing
+    // node does -- a block arrives once -- and it is why an undersized module cache
+    // shows up as eviction here. Setting RETH_BATCH_BLOCK_MAJOR=1 inverts the loops so
+    // each block runs its twelve passes back to back, which keeps that block's modules
+    // resident throughout. Useful for asking how much of a result is ordering; NOT the
+    // protocol, because it hides exactly the cache pressure a node would hit.
+    let block_major = std::env::var_os("RETH_BATCH_BLOCK_MAJOR").is_some();
+    let order: Vec<(BatchPass, usize)> = if block_major {
+        (0..inputs.len())
+            .flat_map(|b| FIXED_HOT_PASSES.into_iter().map(move |p| (p, b)))
+            .collect()
+    } else {
+        FIXED_HOT_PASSES
+            .into_iter()
+            .flat_map(|p| (0..inputs.len()).map(move |b| (p, b)))
+            .collect()
+    };
+    {
+        {
+            for (pass, block_index) in order {
+                let input = &inputs[block_index];
             let replay = session.replay_json(&input.json)?;
             let correctness = BatchCorrectness::from_report(&replay);
             let lifecycle = ProductionLifecycleProof::from_report(&session, &replay);

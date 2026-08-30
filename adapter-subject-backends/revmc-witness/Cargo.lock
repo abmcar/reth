@@ -3543,7 +3543,7 @@ dependencies = [
 [[package]]
 name = "revmc"
 version = "0.1.0"
-source = "git+https://github.com/abmcar/revmc?rev=cf68a87f627299a9c49bcc333a8a317c9b312a3d#cf68a87f627299a9c49bcc333a8a317c9b312a3d"
+source = "git+https://github.com/abmcar/revmc?rev=42d475f46a480c00fe73a70879e4ea633ee8fbbd#42d475f46a480c00fe73a70879e4ea633ee8fbbd"
 dependencies = [
  "revm-bytecode",
  "revm-context-interface",
@@ -3563,7 +3563,7 @@ dependencies = [
 [[package]]
 name = "revmc-backend"
 version = "0.1.0"
-source = "git+https://github.com/abmcar/revmc?rev=cf68a87f627299a9c49bcc333a8a317c9b312a3d#cf68a87f627299a9c49bcc333a8a317c9b312a3d"
+source = "git+https://github.com/abmcar/revmc?rev=42d475f46a480c00fe73a70879e4ea633ee8fbbd#42d475f46a480c00fe73a70879e4ea633ee8fbbd"
 dependencies = [
  "eyre",
  "ruint",
@@ -3572,12 +3572,12 @@ dependencies = [
 [[package]]
 name = "revmc-build"
 version = "0.1.0"
-source = "git+https://github.com/abmcar/revmc?rev=cf68a87f627299a9c49bcc333a8a317c9b312a3d#cf68a87f627299a9c49bcc333a8a317c9b312a3d"
+source = "git+https://github.com/abmcar/revmc?rev=42d475f46a480c00fe73a70879e4ea633ee8fbbd#42d475f46a480c00fe73a70879e4ea633ee8fbbd"
 
 [[package]]
 name = "revmc-builtins"
 version = "0.1.0"
-source = "git+https://github.com/abmcar/revmc?rev=cf68a87f627299a9c49bcc333a8a317c9b312a3d#cf68a87f627299a9c49bcc333a8a317c9b312a3d"
+source = "git+https://github.com/abmcar/revmc?rev=42d475f46a480c00fe73a70879e4ea633ee8fbbd#42d475f46a480c00fe73a70879e4ea633ee8fbbd"
 dependencies = [
  "paste",
  "revm-bytecode",
@@ -3592,7 +3592,7 @@ dependencies = [
 [[package]]
 name = "revmc-codegen"
 version = "0.1.0"
-source = "git+https://github.com/abmcar/revmc?rev=cf68a87f627299a9c49bcc333a8a317c9b312a3d#cf68a87f627299a9c49bcc333a8a317c9b312a3d"
+source = "git+https://github.com/abmcar/revmc?rev=42d475f46a480c00fe73a70879e4ea633ee8fbbd#42d475f46a480c00fe73a70879e4ea633ee8fbbd"
 dependencies = [
  "alloy-primitives",
  "bitflags 2.13.1",
@@ -3623,7 +3623,7 @@ dependencies = [
 [[package]]
 name = "revmc-context"
 version = "0.1.0"
-source = "git+https://github.com/abmcar/revmc?rev=cf68a87f627299a9c49bcc333a8a317c9b312a3d#cf68a87f627299a9c49bcc333a8a317c9b312a3d"
+source = "git+https://github.com/abmcar/revmc?rev=42d475f46a480c00fe73a70879e4ea633ee8fbbd#42d475f46a480c00fe73a70879e4ea633ee8fbbd"
 dependencies = [
  "revm-context",
  "revm-context-interface",
@@ -3638,7 +3638,7 @@ dependencies = [
 [[package]]
 name = "revmc-llvm"
 version = "0.1.0"
-source = "git+https://github.com/abmcar/revmc?rev=cf68a87f627299a9c49bcc333a8a317c9b312a3d#cf68a87f627299a9c49bcc333a8a317c9b312a3d"
+source = "git+https://github.com/abmcar/revmc?rev=42d475f46a480c00fe73a70879e4ea633ee8fbbd#42d475f46a480c00fe73a70879e4ea633ee8fbbd"
 dependencies = [
  "alloy-primitives",
  "cc",
@@ -3651,7 +3651,7 @@ dependencies = [
 [[package]]
 name = "revmc-runtime"
 version = "0.1.0"
-source = "git+https://github.com/abmcar/revmc?rev=cf68a87f627299a9c49bcc333a8a317c9b312a3d#cf68a87f627299a9c49bcc333a8a317c9b312a3d"
+source = "git+https://github.com/abmcar/revmc?rev=42d475f46a480c00fe73a70879e4ea633ee8fbbd#42d475f46a480c00fe73a70879e4ea633ee8fbbd"
 dependencies = [
  "alloy-evm",
  "alloy-primitives",

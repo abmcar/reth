@@ -80,6 +80,15 @@ measured binary was built with rustc 1.95.0 against the official LLVM 22.1.8
 Linux x64 release archive. Network access is needed on first build to fetch
 the pinned git dependencies.
 
+Point the build at that LLVM explicitly; `llvm-sys` will not find it otherwise and
+the first build fails in its build script:
+
+```bash
+export LLVM_SYS_221_PREFIX=/path/to/LLVM-22.1.8-Linux-X64
+cargo build --release
+```
+
+
 ```sh
 cargo build --release
 ./target/release/revmc-witness-adapter --lane resident \

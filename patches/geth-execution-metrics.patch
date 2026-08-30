@@ -1,0 +1,141 @@
+diff --git a/core/stateless.go b/core/stateless.go
+index f8a3f81b1..75c757062 100644
+--- a/core/stateless.go
++++ b/core/stateless.go
+@@ -18,6 +18,9 @@ package core
+ 
+ import (
+ 	"context"
++	"errors"
++	"fmt"
++	"time"
+ 
+ 	"github.com/ethereum/go-ethereum/common"
+ 	"github.com/ethereum/go-ethereum/common/lru"
+@@ -33,6 +36,14 @@ import (
+ 	"github.com/ethereum/go-ethereum/triedb"
+ )
+ 
++// StatelessExecutionMetrics separates witness database setup, block execution,
++// and result validation for one stateless block replay.
++type StatelessExecutionMetrics struct {
++	Setup      time.Duration
++	Execution  time.Duration
++	Validation time.Duration
++}
++
+ // ExecuteStateless runs a stateless execution based on a witness, verifies
+ // everything it can locally and returns the state root and receipt root, that
+ // need the other side to explicitly check.
+@@ -43,6 +54,22 @@ import (
+ //
+ // TODO(karalabe): Would be nice to resolve both issues above somehow and move it.
+ func ExecuteStateless(ctx context.Context, config *params.ChainConfig, vmconfig vm.Config, block *types.Block, witness *stateless.Witness) (common.Hash, common.Hash, error) {
++	return executeStateless(ctx, config, vmconfig, block, witness, nil)
++}
++
++// ExecuteStatelessWithMetrics runs ExecuteStateless and records its three
++// non-overlapping phases. The ordinary execution path remains uninstrumented.
++func ExecuteStatelessWithMetrics(ctx context.Context, config *params.ChainConfig, vmconfig vm.Config, block *types.Block, witness *stateless.Witness) (common.Hash, common.Hash, StatelessExecutionMetrics, error) {
++	var metrics StatelessExecutionMetrics
++	stateRoot, receiptRoot, err := executeStateless(ctx, config, vmconfig, block, witness, &metrics)
++	return stateRoot, receiptRoot, metrics, err
++}
++
++func executeStateless(ctx context.Context, config *params.ChainConfig, vmconfig vm.Config, block *types.Block, witness *stateless.Witness, metrics *StatelessExecutionMetrics) (common.Hash, common.Hash, error) {
++	phaseStarted := time.Time{}
++	if metrics != nil {
++		phaseStarted = time.Now()
++	}
+ 	// Sanity check if the supplied block accidentally contains a set root or
+ 	// receipt hash. If so, be very loud, but still continue.
+ 	if block.Root() != (common.Hash{}) {
+@@ -66,17 +93,42 @@ func ExecuteStateless(ctx context.Context, config *params.ChainConfig, vmconfig
+ 	}
+ 	processor := NewStateProcessor(chain)
+ 	validator := NewBlockValidator(config, nil) // No chain, we only validate the state, not the block
++	if metrics != nil {
++		metrics.Setup = time.Since(phaseStarted)
++		phaseStarted = time.Now()
++	}
+ 
+ 	// Run the stateless blocks processing and self-validate certain fields
+ 	res, err := processor.Process(ctx, block, db, nil, vmconfig)
+ 	if err != nil {
+ 		return common.Hash{}, common.Hash{}, err
+ 	}
++	if metrics != nil {
++		metrics.Execution = time.Since(phaseStarted)
++		phaseStarted = time.Now()
++	}
+ 	if err = validator.ValidateState(block, db, res, true); err != nil {
+ 		return common.Hash{}, common.Hash{}, err
+ 	}
++	// Validate Prague execution requests explicitly. ValidateState returns
++	// early in stateless mode before this check because state and receipt roots
++	// are returned to the caller.
++	if block.RequestsHash() != nil {
++		requestHash := types.CalcRequestsHash(res.Requests)
++		if requestHash != *block.RequestsHash() {
++			return common.Hash{}, common.Hash{}, fmt.Errorf("invalid requests hash (remote: %x local: %x)", *block.RequestsHash(), requestHash)
++		}
++	} else if res.Requests != nil {
++		return common.Hash{}, common.Hash{}, errors.New("block has requests before prague fork")
++	}
+ 	// Almost everything validated, but receipt and state root needs to be returned
+ 	receiptRoot := types.DeriveSha(res.Receipts, trie.NewStackTrie(nil))
+ 	stateRoot := db.IntermediateRoot(config.IsEIP158(block.Number()))
++	if err := db.Error(); err != nil {
++		return common.Hash{}, common.Hash{}, fmt.Errorf("stateless database access failed: %w", err)
++	}
++	if metrics != nil {
++		metrics.Validation = time.Since(phaseStarted)
++	}
+ 	return stateRoot, receiptRoot, nil
+ }
+diff --git a/core/stateless/encoding.go b/core/stateless/encoding.go
+index a34cba6eb..4c121c4dc 100644
+--- a/core/stateless/encoding.go
++++ b/core/stateless/encoding.go
+@@ -49,6 +49,10 @@ func (w *Witness) ToExtWitness() *ExtWitness {
+ 	slices.SortFunc(ext.State, func(a, b hexutil.Bytes) int {
+ 		return bytes.Compare(a, b)
+ 	})
++	ext.Keys = make([]hexutil.Bytes, len(w.Keys))
++	for i, key := range w.Keys {
++		ext.Keys[i] = slices.Clone(key)
++	}
+ 	return ext
+ }
+ 
+@@ -72,6 +76,10 @@ func (w *Witness) FromExtWitness(ext *ExtWitness) error {
+ 	for _, node := range ext.State {
+ 		w.State[string(node)] = struct{}{}
+ 	}
++	w.Keys = make([][]byte, len(ext.Keys))
++	for i, key := range ext.Keys {
++		w.Keys[i] = slices.Clone(key)
++	}
+ 	return nil
+ }
+ 
+diff --git a/core/stateless/witness.go b/core/stateless/witness.go
+index f1321699c..0dafae5f0 100644
+--- a/core/stateless/witness.go
++++ b/core/stateless/witness.go
+@@ -41,6 +41,7 @@ type Witness struct {
+ 	Headers []*types.Header     // Past headers in reverse order (0=parent, 1=parent's-parent, etc). First *must* be set.
+ 	Codes   map[string]struct{} // Set of bytecodes ran or accessed
+ 	State   map[string]struct{} // Set of MPT state trie nodes (account and storage together)
++	Keys    [][]byte            // Auxiliary key preimages from the external witness format
+ 
+ 	chain HeaderReader  // Chain reader to convert block hash ops to header proofs
+ 	stats *WitnessStats // Optional statistics collector
+@@ -130,6 +131,7 @@ func (w *Witness) Copy() *Witness {
+ 		Headers: slices.Clone(w.Headers),
+ 		Codes:   maps.Clone(w.Codes),
+ 		State:   maps.Clone(w.State),
++		Keys:    slices.Clone(w.Keys),
+ 		chain:   w.chain,
+ 	}
+ 	if w.stats != nil {
