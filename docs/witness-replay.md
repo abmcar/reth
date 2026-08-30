@@ -481,6 +481,7 @@ engines across *different* block sets — see §10.3.
 | evmone | `replay-block` | `DTVMStack/evmone@a4a0e47aff903a47a6be133c67ad106c706fe566` | `RETH_SUBJECT_BACKEND=evmone-advanced`; no batch path (§6) |
 | geth | `geth-witness-replay` | go-ethereum v1.17.4 `36a7dc72e`, **fork** variant | §9 |
 | revmc | `revmc-witness-adapter` | `abmcar/revmc@42d475f`, `--lane resident` | §8; its own reth baseline |
+| DTVM (§10.5 primary) | `replay-batch`, default mode | `abmcar/DTVM@ad16f408a9c4329f1f0c3ab6f9e89e55625d805a` on `metrics/lookup-instrumented` — `f9e25be` plus the subtraction of nested module lookups from `jitActiveWallNs`. Plain `f9e25be` reports that field *including* the lookups and will not reproduce 73.30 |
 | DTVM (qualification) | `replay-batch`, default mode | `abmcar/DTVM@f9e25be` on `metrics/evm-phase-metrics-on-8403be3` | the same tree with `patches/dtvm-evmc-phase-metrics.patch` applied and `-DZEN_ENABLE_EVMC_PHASE_METRICS=ON`. The patch is written against `338d123` and does **not** apply to `8403be3`; that branch records the resolution so you do not have to redo it. Needed for §10.4 step 2 |
 | REVM 41 | — | in-record | `phaseWallTimeNs.rethRevmExecute` **from the DTVM production-timing records only**. The evmone leg carries the same field, but as a cold fresh-process figure against the DTVM batch's hot 8-pass median; mixing the two puts different measurements in one cell |
 
@@ -525,7 +526,8 @@ does not apply to those legs. What the published table used:
 
 | leg | invocation | reps/block | keep a sample when | field | aggregate |
 |---|---|---|---|---|---|
-| DTVM | `replay-batch --production-timing`, one process, whole corpus | 8 (`M0`–`M7`) | `timingUse && correctness.passed` | `replay.phaseWallTimeNs.rethSubjectExecute` | median over the 8 |
+| DTVM (primary) | `replay-batch`, default mode, instrumented build | 8 (`M0`–`M7`) | `pass.measured` | `replay.dtvmHotMetrics.delta.jitActiveWallNs` | median over the 8 |
+| DTVM (cross-comparable) | `replay-batch --production-timing`, one process, whole corpus | 8 (`M0`–`M7`) | `timingUse && correctness.passed` | `replay.phaseWallTimeNs.rethSubjectExecute` | median over the 8 |
 | REVM 41 | same records | 8 | same | `replay.phaseWallTimeNs.rethRevmExecute` | median over the 8 |
 | evmone | `replay-block`, fresh process each time | 8 | `postStateRootVerified` | `replay.phaseWallTimeNs.rethSubjectExecute` | median over the 8 |
 | geth | `geth-witness-replay -input`, fresh process each time | 8 | `postStateRootVerified` | `phaseWallTimeNs.gethExecute` | median over the 8 |
@@ -625,34 +627,43 @@ medians over each engine's repetitions.
 
 | engine | boundary | median | mean | p90 | vs DTVM (per-block median) |
 |---|---|---:|---:|---:|---:|
-| revmc | adapter resident timer | 55.51 ms | 62.73 | 109.89 | 0.63x |
-| REVM 41 | `rethRevmExecute` | 61.96 ms | 69.71 | 123.22 | 0.71x |
-| REVM 42 | `revmReferenceElapsedNs` | 66.79 ms | 76.87 | 135.79 | 0.76x |
-| **DTVM** | `rethSubjectExecute` | **87.15 ms** | 94.99 | 160.86 | 1.00x |
-| DTVM, module only | `jitActiveWallNs` net of lookups | 73.30 ms | — | — | 0.84x |
-| geth | `gethExecute` | 221.81 ms | 1366.83 | 4340.46 | 2.52x |
-| evmone | `rethSubjectExecute` | 239.02 ms | 256.74 | 434.21 | 2.70x |
+| revmc | adapter resident timer | 55.51 ms | 62.73 | 109.89 | 0.77x |
+| REVM 41 | `rethRevmExecute` | 61.96 ms | 69.71 | 123.22 | 0.86x |
+| REVM 42 | `revmReferenceElapsedNs` | 66.79 ms | 76.87 | 135.79 | 0.91x |
+| **DTVM** | `jitActiveWallNs` net of lookups | **73.30 ms** | 79.77 | 135.92 | 1.00x |
+| DTVM, cross-comparable | `rethSubjectExecute` | 87.15 ms | 94.99 | 160.86 | 1.20x |
+| geth | `gethExecute` | 221.81 ms | 1366.83 | 4340.46 | 3.07x |
+| evmone | `rethSubjectExecute` | 239.02 ms | 256.74 | 434.21 | 3.26x |
 
 The per-block table is checked in as
 [`docs/results/five-engine-1000.tsv`](./results/five-engine-1000.tsv) — one row per
 block, one column per engine, so any claim here can be recomputed rather than taken
 on trust.
 
-The `dtvm_module_ms` column and the "module only" row peel the DTVM figure down to
-the compiled module itself, in four steps that are subtractive because they come from
-one run: `rethSubjectExecute` 87.36 → `rethSubjectRunExecLoop` 80.41 (−6.95, reth's
-executor construction and state extraction) → `topLevelExecuteWallNs` 76.66 (−3.75,
-entering DTVM) → `jitActiveWallNs` net 73.30 (−3.37, the module-cache lookup and its
-full-bytecode `memcmp`). Those come from the diagnostic build, which on the same
-blocks runs 0.49% slower than the production build (p10–p90 1.0000–1.0105) — the
-bias runs against DTVM, not for it.
+**The DTVM row is measured at a boundary no other engine here can reach.**
+`jitActiveWallNs` net of lookups is the compiled module executing and nothing else:
+no reth executor construction or state extraction, no cost of entering DTVM, no
+module-cache lookup and no full-bytecode `memcmp`. Four boundaries from one run, so
+they subtract: `rethSubjectExecute` 87.36 → `rethSubjectRunExecLoop` 80.41 (−6.95,
+reth's side) → `topLevelExecuteWallNs` 76.66 (−3.75, entering DTVM) →
+`jitActiveWallNs` net 73.30 (−3.37, lookup and `memcmp`). They come from the
+diagnostic build, which on the same blocks runs 0.49% slower than the production
+build (p10–p90 1.0000–1.0105); the bias runs against DTVM.
 
-**Do not divide 73.30 by REVM.** Of the three available ratios only the middle one is
-symmetric: wide/wide 1.41x, tight/tight **1.45x**, net/tight 1.32x. The last is
-DTVM-favourable because the module lookup was removed from one side and REVM has no
-module cache to remove anything from — its equivalent per-contract analysis is inside
-its execution and cannot be separated. 73.30 answers "how fast is the compiled module",
-not "how much faster is DTVM than REVM"; for that, use 1.45x.
+The other four legs stop further out and have no equivalent inner layer to strip:
+revmc's timer starts after its JIT queues drain, geth's `gethExecute` is geth's own
+execution phase, and REVM's per-contract analysis is inside its execution and cannot
+be separated. **The "vs DTVM" column is therefore systematically DTVM-favourable.**
+The `dtvm_ms` column and the cross-comparable row exist for the symmetric question:
+
+| comparison | DTVM/REVM 41 | symmetric? |
+|---|---:|---|
+| this table's primary (net / wide) | 1.16x | no — DTVM stripped to its innermost, REVM not |
+| wide / wide | 1.41x | yes — both carry their own harness cost |
+| **tight / tight** | **1.45x** | **yes — both stripped of reth's side. The clean pair** |
+
+For "how much faster is DTVM than REVM", use **1.45x**. The table's primary boundary
+answers a different question: how fast the generated code itself is.
 
 Read the per-block ratio spread, not just the median. evmone's is 2.22x–3.44x
 (p10–p90) and geth's is 2.11x–40.04x; a single number hides that geth is bimodal
@@ -676,7 +687,11 @@ running a full-bytecode `memcmp` under the mandatory strict validation. Read the
 DTVM number as *DTVM through the EVMC bridge with strict validation*, not as a
 measurement of its code generation.
 
-### 10.6 What the DTVM number contains
+### 10.6 What the cross-comparable DTVM number contains
+
+This section is about the `dtvm_ms` column — the cross-comparable row, measured at
+the same boundary as evmone. §10.5 explains why the table's primary DTVM figure is
+the narrower `jitActiveWallNs`, and why the two must not be swapped for each other.
 
 Read `rethSubjectExecute` and you get the wide boundary: executor construction,
 `execute_one`, and state extraction. `replay-batch` — and only `replay-batch`,
