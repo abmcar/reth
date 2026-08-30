@@ -437,11 +437,22 @@ revmc, and REVM over one thousand consecutive mainnet blocks.
 
 ### 10.0 Pin this document too
 
-This file pins every dependency by commit and is itself addressed by a branch, which
-is the same failure it warns about. The campaign described here was run from
-**`abmcar/reth@6b9d316c32f73dfee0e267f82b7d0f5bf2939f48`** on
-`evmc-extra-access-fix`. Check that out rather than the branch tip if you want the
-harness exactly as measured.
+This file pins every dependency by commit and was itself addressed only by a branch,
+which is the same failure it warns about. Two commits matter and they are not the
+same one:
+
+- **The harness that produced the numbers.** `replay-batch`, `replay-block` and
+  `verify-witness` were built from
+  `abmcar/reth@62bae4417dbe1d16eee71cf080cd838ecd4f757e`, from a clean tree. That is
+  the code that ran; check it out if you want the measurement path byte-for-byte.
+- **This document.** Later commits on `evmc-extra-access-fix` correct the text
+  without touching the harness — a wrong module-cache sizing rule, a wrong DTVM pin,
+  a mixed-source REVM column, and the gaps a reproducibility audit found. Read the
+  branch tip, not `62bae441`, or you will read the errors this section exists to
+  record.
+
+The split is deliberate: re-running the harness to fix prose would invalidate the
+numbers the prose describes.
 
 ### 10.1 The corpus
 
