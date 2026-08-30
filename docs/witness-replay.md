@@ -216,8 +216,25 @@ which the §4 hot-cache gate then fails, correctly. The
 `feat/evm-persistent-code-cache` branch reads
 `DTVM_EVM_MAX_MODULE_CACHE_SIZE` (a plain environment variable, not an EVMC
 option) to raise it; an unparseable value is ignored with a warning and the
-default stands. Count your corpus first and set the bound above it — the
-1000-block corpus of §10 holds 15,415 unique contracts and is run at 16384.
+default stands.
+
+**Do not size this bound by counting unique contracts.** That is the mistake this
+document previously recommended, and it cost a full re-measurement. The cache key is
+`(code_address, revision, memory-specialisation profile, 8-byte code prefix, code
+size)`, so one contract occupies more than one entry whenever it is entered under
+more than one memory profile. The 1000-block corpus of §10 has 15,415 unique
+contracts, a bound of 16384 looks comfortable, and it evicts: the diagnostic
+protocol fails the hot-cache gate at the very first block of `G0` with seven
+evictions, seven misses and seven synchronous compilations. The measured effect of
+that eviction on the same corpus, same disk cache, same binary and same protocol
+was **217.23 ms per block against 87.15 ms** — a 2.49x error, entirely inside the
+"execution" figure.
+
+Size it with headroom and then **prove** it: a `--production-timing` run does not
+check the hot-cache gate and will report contaminated numbers without complaint.
+Only the default (diagnostic) protocol of §4 checks
+`moduleCacheEvictionCount == 0` and `synchronousJitCompileAttemptCount == 0`. The
+§10 campaign now runs at 131072 and is verified eviction-free that way.
 
 For the **diagnostic** build, apply
 [`patches/dtvm-evmc-phase-metrics.patch`](../patches/dtvm-evmc-phase-metrics.patch)
@@ -418,6 +435,12 @@ Blocks **25817835–25818834**, 1000 consecutive blocks with no gaps, ~16 GB of
 bundles. Measured properties, not estimates: **15,415 unique contracts**,
 147.9 MB of novel bytecode, a mean of 361 contracts per block.
 
+[`docs/corpus/mainnet-25817835-25818834.tsv`](./corpus/mainnet-25817835-25818834.tsv)
+pins it: block number, block hash, and the SHA-256 of the bundle this campaign used,
+one row per block. The block hash is the anchor — a bundle re-captured from a
+different node or reth version can differ byte-wise while describing the same block,
+and `verify-witness` checks a bundle's internal integrity either way.
+
 Capture it with the §7 loop (`FROM=25817835`, `TO=25818834`). These blocks sit
 well below any current head, so the depth cost of §7 applies — raise the read
 transaction timeout (`--db.read-transaction-timeout 0`) or capture your own
@@ -429,7 +452,7 @@ engines across *different* block sets — see §10.3.
 
 | Engine | Binary | Version pin | Notes |
 |---|---|---|---|
-| DTVM | `replay-batch` | `abmcar/DTVM@03b542e6b765685795dee2d4a8a3efcba91d0e2a` | `RETH_SUBJECT_BACKEND=dtvm-eager`; needs `DTVM_EVM_MAX_MODULE_CACHE_SIZE=16384` (§5) and a metrics-OFF build for `--production-timing` |
+| DTVM | `replay-batch` | `abmcar/DTVM@03b542e6b765685795dee2d4a8a3efcba91d0e2a` | `RETH_SUBJECT_BACKEND=dtvm-eager`; needs `DTVM_EVM_MAX_MODULE_CACHE_SIZE=131072` (§5 — do not size this by unique-contract count) and a metrics-OFF build for `--production-timing` |
 | evmone | `replay-block` | `DTVMStack/evmone` v0.18.0, sha256 `1316fad3aac3ee21…` | `RETH_SUBJECT_BACKEND=evmone-advanced`; no batch path (§6) |
 | geth | `geth-witness-replay` | go-ethereum v1.17.4 `36a7dc72e`, **fork** variant | §9 |
 | revmc | `revmc-witness-adapter` | `abmcar/revmc@42d475f`, `--lane resident` | §8; its own reth baseline |
@@ -449,10 +472,11 @@ while the EVMC legs use this repository at v2.4.1 / revm 41. §8 explains why
 that gap is unquantified; do not silently fold it into an engine ratio.
 
 The DTVM leg is the expensive one. With no code cache it is roughly 6.4 hours
-over the good blocks; with a fully populated on-disk cache it is about 0.3
-hours. At the *default* L1 bound of 4096 — below this corpus's 15,415 unique
-contracts — it degrades to hundreds of hours from eviction thrash, which is
-why §5's environment variable is not optional here.
+over the good blocks; with a fully populated on-disk cache the twelve passes take
+about 80 minutes. At the *default* L1 bound of 4096 it degrades to hundreds of
+hours from eviction thrash, which is why §5's environment variable is not
+optional here — and §5 explains why 16384 is also not enough despite the corpus
+having only 15,415 unique contracts.
 
 ### 10.3 Use the intersection, not each engine's own subset
 
@@ -497,22 +521,73 @@ timed in one pass at all.
 Steps 2 and 3 are two different runs against two different libraries by
 design; skipping step 2 leaves the timing valid but unqualified.
 
-### 10.5 What the DTVM number contains
+**Do not treat step 2 as optional.** "Unqualified" sounds like a missing formality;
+it is not. `--production-timing` checks the single-VM invariant and the correctness
+gate, and nothing else. It does not check that the measured passes were free of
+compilation and cache eviction, so a run whose module cache is too small produces
+numbers that look ordinary and are wrong by a factor. That is not hypothetical: the
+first version of §10.5's DTVM column was contaminated exactly this way, and only the
+diagnostic protocol surfaced it.
+
+### 10.5 Results
+
+One thousand blocks, four engines, full intersection, nothing dropped. Per-block
+medians over each engine's repetitions.
+
+| engine | boundary | median | mean | p90 | vs DTVM (per-block median) |
+|---|---|---:|---:|---:|---:|
+| revmc | adapter resident timer | 55.51 ms | 62.73 | 109.89 | 0.63x |
+| REVM 41 | `rethRevmExecute` | 64.90 ms | 72.78 | 128.10 | 0.74x |
+| REVM 42 | `revmReferenceElapsedNs` | 66.79 ms | 76.87 | 135.79 | 0.76x |
+| **DTVM** | `rethSubjectExecute` | **87.15 ms** | 94.99 | 160.86 | 1.00x |
+| geth | `gethExecute` | 221.81 ms | 1366.83 | 4340.46 | 2.52x |
+| evmone | `rethSubjectExecute` | 239.02 ms | 256.74 | 434.21 | 2.70x |
+
+The per-block table is checked in as
+[`docs/results/five-engine-1000.tsv`](./results/five-engine-1000.tsv) — one row per
+block, one column per engine, so any claim here can be recomputed rather than taken
+on trust.
+
+Read the per-block ratio spread, not just the median. evmone's is 2.22x–3.44x
+(p10–p90) and geth's is 2.11x–40.04x; a single number hides that geth is bimodal
+(§5 of the engine notes, and 290 of the 1000 blocks exceed two seconds while the
+median is 221 ms).
+
+The two REVM legs are the same engine on different host baselines — revm 41 inside
+this repository, revm 42 inside the revmc adapter's upstream reth. Their per-block
+absolute difference has a median of 3.2% and a p90 of 23.9%, which is the honest
+size of the "unquantified host-version component" this document used to warn about
+without measuring: fine to cross for an aggregate, not fine to cross for one block.
+
+**What this table is not.** The boundaries in column two are not the same region.
+DTVM and evmone are measured through `rethSubjectExecute`, which includes reth-side
+executor construction and state extraction; geth's `gethExecute` is geth's own
+execution phase and never pays that; revmc's timer starts after its JIT queues
+drain. The EVMC legs therefore carry a harness cost the other two do not — about
+4% for DTVM, measured by comparing against `rethSubjectRunExecLoop` (87.15 vs
+80.09 ms). Deeper still, DTVM's figure contains every host callback crossing the
+EVMC bridge and, on this corpus, about 2,100 module-cache lookups per block each
+running a full-bytecode `memcmp` under the mandatory strict validation. Read the
+DTVM number as *DTVM through the EVMC bridge with strict validation*, not as a
+measurement of its code generation.
+
+### 10.6 What the DTVM number contains
 
 Read `rethSubjectExecute` and you get the wide boundary: executor construction,
 `execute_one`, and state extraction. `replay-batch` — and only `replay-batch`,
 since `execution_metrics::enable()` is called from the batch session
 constructor — also fills `rethSubjectRunExecLoop.wallNs`, the sum over each
 top-level execution of revm's frame-execution loop. On this corpus the gap is
-small: 217.23 ms wide against 207.15 ms tight for DTVM, 62.17 against 56.03 for
-REVM. The fixed overhead is the same in absolute terms on both arms, so it is a
-larger *fraction* of REVM's smaller number — which means the tight boundary
-makes DTVM look **worse**, not better: 3.44x against 3.22x.
+small: 87.15 ms wide against 80.09 ms tight for DTVM, 61.96 against 55.52 for
+REVM — 8.5% and 10.2% respectively. The fixed overhead is the same in absolute
+terms on both arms, so it is a larger *fraction* of REVM's smaller number, which
+means the tight boundary makes DTVM look slightly **worse**, not better: 1.44x
+against 1.41x.
 
 Neither boundary isolates code generation. Both include every host callback
 made from inside the loop, and for the EVMC backends every one of those crosses
-the bridge. A metrics-ON build measured, on this corpus, **2,248 module-cache
-lookups per block** against 186 top-level executions — the lookup is per call
+the bridge. A metrics-ON build measured, on this corpus, roughly **2,100 module-cache
+lookups per block** against 190 top-level executions — the lookup is per call
 *frame*, and the L0 inline cache is disabled in the source. Each of those
 lookups runs a full bytecode `memcmp`, because
 `DTVM_EVM_STRICT_ADDR_CACHE_VALIDATION=true` is mandatory here and the relaxed
